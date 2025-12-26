@@ -12,24 +12,27 @@ import (
 	"go.uber.org/zap"
 	gobpfsecurity "github.com/udyansh/gobpf/security"
 
-	"github.com/udyansh/elf-owl/pkg/agent"
 	"github.com/udyansh/elf-owl/pkg/kubernetes"
 )
 
 // Enricher adds K8s context to raw goBPF events
 type Enricher struct {
 	K8sClient *kubernetes.Client
-	Config    *agent.Config
+	ClusterID string
+	NodeName  string
 	Logger    *zap.Logger
 }
 
 // NewEnricher creates a new event enricher
-func NewEnricher(k8sClient *kubernetes.Client, config *agent.Config) (*Enricher, error) {
+// ANCHOR: Enricher initialization without circular dependency - Dec 26, 2025
+// Pass only needed fields (ClusterID, NodeName) instead of full Config to avoid import cycle
+func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string) (*Enricher, error) {
 	logger, _ := zap.NewProduction()
 
 	return &Enricher{
 		K8sClient: k8sClient,
-		Config:    config,
+		ClusterID: clusterID,
+		NodeName:  nodeName,
 		Logger:    logger,
 	}, nil
 }
@@ -54,8 +57,8 @@ func (e *Enricher) EnrichProcessEvent(
 		EventType: "process_execution",
 		Timestamp: time.Now(),
 		Kubernetes: &K8sContext{
-			ClusterID: e.Config.Agent.ClusterID,
-			NodeName:  e.Config.Agent.NodeName,
+			ClusterID: e.ClusterID,
+			NodeName:  e.NodeName,
 		},
 		Container: &ContainerContext{},
 	}
@@ -79,8 +82,8 @@ func (e *Enricher) EnrichNetworkEvent(
 		EventType: "network_connection",
 		Timestamp: time.Now(),
 		Kubernetes: &K8sContext{
-			ClusterID: e.Config.Agent.ClusterID,
-			NodeName:  e.Config.Agent.NodeName,
+			ClusterID: e.ClusterID,
+			NodeName:  e.NodeName,
 		},
 		Container: &ContainerContext{},
 	}
@@ -89,6 +92,10 @@ func (e *Enricher) EnrichNetworkEvent(
 }
 
 // EnrichDNSEvent enriches a goBPF DNS event
+// ANCHOR: DNS event enrichment stub - Dec 26, 2025
+// DNSEvent type not yet available in goBPF security package
+// Commenting out until Week 2 implementation with complete goBPF integration
+/*
 func (e *Enricher) EnrichDNSEvent(
 	ctx context.Context,
 	gobpfEvent *gobpfsecurity.DNSEvent,
@@ -104,14 +111,15 @@ func (e *Enricher) EnrichDNSEvent(
 		EventType: "dns_query",
 		Timestamp: time.Now(),
 		Kubernetes: &K8sContext{
-			ClusterID: e.Config.Agent.ClusterID,
-			NodeName:  e.Config.Agent.NodeName,
+			ClusterID: e.ClusterID,
+			NodeName:  e.NodeName,
 		},
 		Container: &ContainerContext{},
 	}
 
 	return enrichedEvent, nil
 }
+*/
 
 // EnrichFileEvent enriches a goBPF file event
 func (e *Enricher) EnrichFileEvent(
@@ -129,8 +137,8 @@ func (e *Enricher) EnrichFileEvent(
 		EventType: "file_access",
 		Timestamp: time.Now(),
 		Kubernetes: &K8sContext{
-			ClusterID: e.Config.Agent.ClusterID,
-			NodeName:  e.Config.Agent.NodeName,
+			ClusterID: e.ClusterID,
+			NodeName:  e.NodeName,
 		},
 		Container: &ContainerContext{},
 	}
@@ -154,8 +162,8 @@ func (e *Enricher) EnrichCapabilityEvent(
 		EventType: "capability_usage",
 		Timestamp: time.Now(),
 		Kubernetes: &K8sContext{
-			ClusterID: e.Config.Agent.ClusterID,
-			NodeName:  e.Config.Agent.NodeName,
+			ClusterID: e.ClusterID,
+			NodeName:  e.NodeName,
 		},
 		Container: &ContainerContext{},
 	}

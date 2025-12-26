@@ -7,13 +7,13 @@ package api
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/go-resty/resty/v2"
 	"go.uber.org/zap"
 
-	"github.com/udyansh/elf-owl/pkg/agent"
+	"github.com/udyansh/elf-owl/pkg/config"
 	"github.com/udyansh/elf-owl/pkg/evidence"
 )
 
@@ -28,9 +28,10 @@ type Client struct {
 	logger        *zap.Logger
 	signer        *evidence.Signer
 	cipher        *evidence.Cipher
-	retryConfig   agent.RetryConfig
+	retryConfig   config.RetryConfig
 
-	// Metrics
+	// Metrics (thread-safe with mutex)
+	mu              sync.Mutex
 	lastPushTime    time.Time
 	failureCount    int64
 	successCount    int64
@@ -44,7 +45,7 @@ func NewClient(
 	jwtToken string,
 	signer *evidence.Signer,
 	cipher *evidence.Cipher,
-	retryConfig agent.RetryConfig,
+	retryConfig config.RetryConfig,
 ) (*Client, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("endpoint is required")
@@ -104,8 +105,12 @@ func (c *Client) PushWithRetry(ctx context.Context, bufferedEvents []*evidence.B
 	for attempt := 0; attempt < c.retryConfig.MaxRetries; attempt++ {
 		err := c.Push(ctx, bufferedEvents)
 		if err == nil {
-			atomic.StoreInt64(&c.lastPushTime, time.Now().Unix())
-			atomic.AddInt64(&c.successCount, 1)
+			// ANCHOR: Update metrics on successful push with mutex protection - Dec 26, 2025
+			// Use mutex to safely update lastPushTime and successCount
+			c.mu.Lock()
+			c.lastPushTime = time.Now()
+			c.successCount++
+			c.mu.Unlock()
 			return nil
 		}
 
@@ -130,25 +135,37 @@ func (c *Client) PushWithRetry(ctx context.Context, bufferedEvents []*evidence.B
 		}
 	}
 
-	atomic.AddInt64(&c.failureCount, 1)
+	// ANCHOR: Increment failure count with mutex protection - Dec 26, 2025
+	// Thread-safe update of failure counter
+	c.mu.Lock()
+	c.failureCount++
+	c.mu.Unlock()
 	return fmt.Errorf("push failed after %d attempts", c.retryConfig.MaxRetries)
 }
 
 // LastPushTime returns the time of last successful push
 func (c *Client) LastPushTime() time.Time {
-	timestamp := atomic.LoadInt64(&c.lastPushTime)
-	if timestamp == 0 {
-		return time.Time{}
-	}
-	return time.Unix(timestamp, 0)
+	// ANCHOR: Thread-safe read of lastPushTime with mutex - Dec 26, 2025
+	// Protect time.Time field access with mutex instead of unsafe atomic operations
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastPushTime
 }
 
 // SuccessCount returns the total number of successful pushes
 func (c *Client) SuccessCount() int64 {
-	return atomic.LoadInt64(&c.successCount)
+	// ANCHOR: Thread-safe read of successCount with mutex - Dec 26, 2025
+	// Protect counter access with mutex for consistency
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.successCount
 }
 
 // FailureCount returns the total number of failed pushes
 func (c *Client) FailureCount() int64 {
-	return atomic.LoadInt64(&c.failureCount)
+	// ANCHOR: Thread-safe read of failureCount with mutex - Dec 26, 2025
+	// Protect counter access with mutex for consistency
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.failureCount
 }

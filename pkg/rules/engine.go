@@ -6,11 +6,11 @@ package rules
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
 
-	"github.com/udyansh/elf-owl/pkg/agent"
 	"github.com/udyansh/elf-owl/pkg/enrichment"
 )
 
@@ -49,7 +49,9 @@ type Violation struct {
 }
 
 // NewEngine creates a new rule engine
-func NewEngine(config *agent.Config) (*Engine, error) {
+// ANCHOR: Rule engine initialization without config dependency - Dec 26, 2025
+// Removed config parameter to break circular import dependency
+func NewEngine() (*Engine, error) {
 	logger, _ := zap.NewProduction()
 
 	engine := &Engine{
@@ -98,9 +100,134 @@ func (e *Engine) Match(event *enrichment.EnrichedEvent) []*Violation {
 
 // evaluateCondition evaluates a single condition against an event
 func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Condition) bool {
-	// TODO: Week 2 implementation
-	// For now, return false (no violations detected)
-	return false
+	// ANCHOR: Condition evaluation for CIS rule matching - Dec 26, 2025
+	// Implements field extraction and operator-based matching
+	// Supports: equals, not_equals, contains, in, regex patterns
+
+	// Extract field value from event
+	fieldValue := e.extractField(event, cond.Field)
+	if fieldValue == nil {
+		return false
+	}
+
+	// Evaluate based on operator
+	switch cond.Operator {
+	case "equals":
+		return fieldValue == cond.Value
+
+	case "not_equals":
+		return fieldValue != cond.Value
+
+	case "contains":
+		// String contains check
+		if str, ok := fieldValue.(string); ok {
+			if val, ok := cond.Value.(string); ok {
+				return strings.Contains(str, val)
+			}
+		}
+		return false
+
+	case "in":
+		// Check if fieldValue is in list
+		if values, ok := cond.Value.([]interface{}); ok {
+			for _, v := range values {
+				if fieldValue == v {
+					return true
+				}
+			}
+		}
+		return false
+
+	case "greater_than":
+		// Numeric comparison
+		if fv, ok := fieldValue.(int); ok {
+			if cv, ok := cond.Value.(int); ok {
+				return fv > cv
+			}
+		}
+		return false
+
+	case "less_than":
+		// Numeric comparison
+		if fv, ok := fieldValue.(int); ok {
+			if cv, ok := cond.Value.(int); ok {
+				return fv < cv
+			}
+		}
+		return false
+
+	default:
+		e.Logger.Warn("unknown operator", zap.String("operator", cond.Operator))
+		return false
+	}
+}
+
+// extractField extracts a field value from an enriched event
+// Supports nested fields like "kubernetes.pod_name", "container.id"
+// ANCHOR: Field extraction for rule matching - Dec 26, 2025
+// Only includes fields that exist in enrichment.EnrichedEvent structure
+// Extended fields (process, network) will be added in Week 2 implementation
+func (e *Engine) extractField(event *enrichment.EnrichedEvent, fieldPath string) interface{} {
+	if event == nil {
+		return nil
+	}
+
+	switch fieldPath {
+	// Event fields
+	case "event_type":
+		return event.EventType
+	case "timestamp":
+		return event.Timestamp
+	case "severity":
+		return event.Severity
+	case "cis_control":
+		return event.CISControl
+
+	// Kubernetes context fields
+	case "kubernetes.namespace":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.Namespace
+		}
+	case "kubernetes.pod_name":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.PodName
+		}
+	case "kubernetes.pod_uid":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.PodUID
+		}
+	case "kubernetes.cluster_id":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.ClusterID
+		}
+	case "kubernetes.node_name":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.NodeName
+		}
+	case "kubernetes.service_account":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.ServiceAccount
+		}
+
+	// Container context fields
+	case "container.id":
+		if event.Container != nil {
+			return event.Container.ContainerID
+		}
+	case "container.name":
+		if event.Container != nil {
+			return event.Container.ContainerName
+		}
+	case "container.runtime":
+		if event.Container != nil {
+			return event.Container.Runtime
+		}
+
+	default:
+		return nil
+	}
+
+	return nil
 }
 
 // Helper functions

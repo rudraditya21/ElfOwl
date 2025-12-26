@@ -7,11 +7,11 @@ package agent
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
+
+	"github.com/udyansh/elf-owl/pkg/config"
 )
 
 // Config is the top-level configuration structure
@@ -100,11 +100,11 @@ type EncryptionConfig struct {
 
 // OWLConfig defines Owl SaaS API settings
 type OWLConfig struct {
-	Endpoint string      `yaml:"endpoint"`
-	Auth     AuthConfig  `yaml:"auth"`
-	Push     PushConfig  `yaml:"push"`
-	Retry    RetryConfig `yaml:"retry"`
-	TLS      TLSConfig   `yaml:"tls"`
+	Endpoint string              `yaml:"endpoint"`
+	Auth     AuthConfig          `yaml:"auth"`
+	Push     PushConfig          `yaml:"push"`
+	Retry    config.RetryConfig  `yaml:"retry"`
+	TLS      TLSConfig           `yaml:"tls"`
 }
 
 // AuthConfig defines authentication settings
@@ -115,18 +115,10 @@ type AuthConfig struct {
 
 // PushConfig defines push settings
 type PushConfig struct {
-	BatchSize   int           `yaml:"batch_size"`
+	BatchSize    int           `yaml:"batch_size"`
 	BatchTimeout time.Duration `yaml:"batch_timeout"`
-	Enabled     bool          `yaml:"enabled"`
-	DryRun      bool          `yaml:"dry_run"`
-}
-
-// RetryConfig defines retry settings
-type RetryConfig struct {
-	MaxRetries       int           `yaml:"max_retries"`
-	InitialBackoff   time.Duration `yaml:"initial_backoff"`
-	MaxBackoff       time.Duration `yaml:"max_backoff"`
-	BackoffMultiplier float64      `yaml:"backoff_multiplier"`
+	Enabled      bool          `yaml:"enabled"`
+	DryRun       bool          `yaml:"dry_run"`
 }
 
 // TLSConfig defines TLS settings
@@ -305,7 +297,7 @@ func DefaultConfig() *Config {
 					Enabled:      true,
 					DryRun:       false,
 				},
-				Retry: RetryConfig{
+				Retry: config.RetryConfig{
 					MaxRetries:        10,
 					InitialBackoff:    1 * time.Second,
 					MaxBackoff:        60 * time.Second,

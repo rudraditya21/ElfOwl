@@ -8,12 +8,9 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
-	"github.com/prometheus/client_golang/prometheus"
 
 	// Direct goBPF imports (no wrapper layer)
 	gobpfsecurity "github.com/udyansh/gobpf/security"
@@ -35,7 +32,7 @@ type Agent struct {
 	// ===== goBPF Security Monitors (Direct Import) =====
 	ProcessMonitor    *gobpfsecurity.ProcessMonitor
 	NetworkMonitor    *gobpfsecurity.NetworkMonitor
-	DNSMonitor        *gobpfsecurity.DNSMonitor
+	// DNSMonitor - Not yet available in goBPF security package, commented for Week 2
 	FileMonitor       *gobpfsecurity.FileMonitor
 	CapabilityMonitor *gobpfsecurity.CapabilityMonitor
 
@@ -109,6 +106,10 @@ func NewAgent(config *Config) (*Agent, error) {
 		agent.Logger.Info("network monitor initialized")
 	}
 
+	// ANCHOR: DNS monitor initialization skipped - Dec 26, 2025
+	// DNSMonitor not yet available in goBPF security package
+	// Will be enabled in Week 2 when goBPF integration is complete
+	/*
 	if config.Agent.GoBPF.DNS.Enabled {
 		opts := gobpfsecurity.DefaultDNSMonitorOptions()
 		dnsMonitor, err := gobpfsecurity.NewDNSMonitor(opts)
@@ -118,6 +119,7 @@ func NewAgent(config *Config) (*Agent, error) {
 		agent.DNSMonitor = dnsMonitor
 		agent.Logger.Info("DNS monitor initialized")
 	}
+	*/
 
 	if config.Agent.GoBPF.File.Enabled {
 		opts := gobpfsecurity.DefaultFileMonitorOptions()
@@ -148,7 +150,7 @@ func NewAgent(config *Config) (*Agent, error) {
 	agent.Logger.Info("kubernetes client initialized")
 
 	// Initialize rule engine
-	ruleEngine, err := rules.NewEngine(config)
+	ruleEngine, err := rules.NewEngine()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rule engine: %w", err)
 	}
@@ -156,7 +158,7 @@ func NewAgent(config *Config) (*Agent, error) {
 	agent.Logger.Info("rule engine initialized")
 
 	// Initialize enricher
-	enricher, err := enrichment.NewEnricher(agent.K8sClient, config)
+	enricher, err := enrichment.NewEnricher(agent.K8sClient, config.Agent.ClusterID, config.Agent.NodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enricher: %w", err)
 	}
@@ -232,12 +234,16 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.Logger.Info("network monitor started")
 	}
 
+	// ANCHOR: DNS monitor start skipped - Dec 26, 2025
+	// DNS monitor not available in goBPF security package
+	/*
 	if a.DNSMonitor != nil {
 		if err := a.DNSMonitor.Start(); err != nil {
 			return fmt.Errorf("failed to start DNS monitor: %w", err)
 		}
 		a.Logger.Info("DNS monitor started")
 	}
+	*/
 
 	if a.FileMonitor != nil {
 		if err := a.FileMonitor.Start(); err != nil {
@@ -256,7 +262,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Launch event handlers for each goBPF monitor
 	go a.handleProcessEvents(ctx)
 	go a.handleNetworkEvents(ctx)
-	go a.handleDNSEvents(ctx)
+	// go a.handleDNSEvents(ctx) // DNS monitor not available in goBPF yet
 	go a.handleFileEvents(ctx)
 	go a.handleCapabilityEvents(ctx)
 
@@ -289,7 +295,7 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 			// Run through rule engine
 			violations := a.RuleEngine.Match(enrichedEvent)
 			if len(violations) > 0 {
-				atomic.AddInt64(&a.violationsFound, int64(len(violations)))
+				a.violationsFound += int64(len(violations))
 				for _, violation := range violations {
 					a.Logger.Info("CIS violation detected",
 						zap.String("control", violation.ControlID),
@@ -301,7 +307,7 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 
 			// Queue for evidence processing
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			atomic.AddInt64(&a.eventsProcessed, 1)
+			a.eventsProcessed++
 
 		case err := <-a.ProcessMonitor.Errors():
 			a.Logger.Warn("process monitor error", zap.Error(err))
@@ -329,11 +335,11 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 
 			violations := a.RuleEngine.Match(enrichedEvent)
 			if len(violations) > 0 {
-				atomic.AddInt64(&a.violationsFound, int64(len(violations)))
+				a.violationsFound += int64(len(violations))
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			atomic.AddInt64(&a.eventsProcessed, 1)
+			a.eventsProcessed++
 
 		case err := <-a.NetworkMonitor.Errors():
 			a.Logger.Warn("network monitor error", zap.Error(err))
@@ -345,6 +351,9 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 }
 
 // handleDNSEvents handles goBPF DNS monitor events
+// ANCHOR: DNS event handler skipped - Dec 26, 2025
+// DNS monitor not available in goBPF security package
+/*
 func (a *Agent) handleDNSEvents(ctx context.Context) {
 	if a.DNSMonitor == nil {
 		return
@@ -361,11 +370,11 @@ func (a *Agent) handleDNSEvents(ctx context.Context) {
 
 			violations := a.RuleEngine.Match(enrichedEvent)
 			if len(violations) > 0 {
-				atomic.AddInt64(&a.violationsFound, int64(len(violations)))
+				a.violationsFound += int64(len(violations))
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			atomic.AddInt64(&a.eventsProcessed, 1)
+			a.eventsProcessed++
 
 		case err := <-a.DNSMonitor.Errors():
 			a.Logger.Warn("DNS monitor error", zap.Error(err))
@@ -375,6 +384,7 @@ func (a *Agent) handleDNSEvents(ctx context.Context) {
 		}
 	}
 }
+*/
 
 // handleFileEvents handles goBPF file monitor events
 func (a *Agent) handleFileEvents(ctx context.Context) {
@@ -393,11 +403,11 @@ func (a *Agent) handleFileEvents(ctx context.Context) {
 
 			violations := a.RuleEngine.Match(enrichedEvent)
 			if len(violations) > 0 {
-				atomic.AddInt64(&a.violationsFound, int64(len(violations)))
+				a.violationsFound += int64(len(violations))
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			atomic.AddInt64(&a.eventsProcessed, 1)
+			a.eventsProcessed++
 
 		case err := <-a.FileMonitor.Errors():
 			a.Logger.Warn("file monitor error", zap.Error(err))
@@ -417,7 +427,7 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 	for {
 		select {
 		case gobpfEvent := <-a.CapabilityMonitor.Events():
-			enrichedEvent, err := a.Enricher.EnrichCapabilityEvent(ctx, gobpfEvent)
+			enrichedEvent, err := a.Enricher.EnrichCapabilityEvent(ctx, &gobpfEvent)
 			if err != nil {
 				a.Logger.Debug("failed to enrich capability event", zap.Error(err))
 				continue
@@ -425,11 +435,11 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 
 			violations := a.RuleEngine.Match(enrichedEvent)
 			if len(violations) > 0 {
-				atomic.AddInt64(&a.violationsFound, int64(len(violations)))
+				a.violationsFound += int64(len(violations))
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			atomic.AddInt64(&a.eventsProcessed, 1)
+			a.eventsProcessed++
 
 		case err := <-a.CapabilityMonitor.Errors():
 			a.Logger.Warn("capability monitor error", zap.Error(err))
@@ -488,8 +498,8 @@ func (a *Agent) collectMetrics(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			processed := atomic.LoadInt64(&a.eventsProcessed)
-			violations := atomic.LoadInt64(&a.violationsFound)
+			processed := a.eventsProcessed
+			violations := a.violationsFound
 
 			a.Logger.Debug("metrics",
 				zap.Int64("events_processed", processed),
@@ -527,12 +537,16 @@ func (a *Agent) Stop() error {
 		}
 	}
 
+	// ANCHOR: DNS monitor close skipped - Dec 26, 2025
+	// DNS monitor not available in goBPF security package
+	/*
 	if a.DNSMonitor != nil {
 		if err := a.DNSMonitor.Close(); err != nil {
 			a.Logger.Error("failed to close DNS monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
 	}
+	*/
 
 	if a.FileMonitor != nil {
 		if err := a.FileMonitor.Close(); err != nil {
@@ -562,14 +576,14 @@ func (a *Agent) Health() HealthStatus {
 		AgentVersion:     "0.1.0",
 		Uptime:           time.Since(a.startTime),
 		Status:           "healthy",
-		EventsProcessed:  atomic.LoadInt64(&a.eventsProcessed),
-		ViolationsFound:  atomic.LoadInt64(&a.violationsFound),
+		EventsProcessed:  a.eventsProcessed,
+		ViolationsFound:  a.violationsFound,
 		LastPushTime:     a.APIClient.LastPushTime(),
 		PushFailureCount: a.APIClient.FailureCount(),
 		Monitors: map[string]bool{
 			"process":     a.ProcessMonitor != nil,
 			"network":     a.NetworkMonitor != nil,
-			"dns":         a.DNSMonitor != nil,
+			"dns":         false, // a.DNSMonitor != nil - DNS monitor not available in goBPF yet
 			"file":        a.FileMonitor != nil,
 			"capability":  a.CapabilityMonitor != nil,
 		},
@@ -605,9 +619,12 @@ func (a *Agent) getEncryptionKey() string {
 		return string(data)
 	}
 
-	// Return default (insecure - for development only)
-	a.Logger.Warn("using default encryption key - NOT SECURE")
-	return "ZGVmYXVsdC1lbmNyeXB0aW9uLWtleS0tLW5vdC1zZWN1cmUtZm9yLWRldmVsb3BtZW50LW9ubHk"
+	// ANCHOR: Default development encryption key - Dec 26, 2025
+	// 32-byte key (256-bit) base64-encoded for AES-256-GCM
+	// Equivalent to: [32 bytes of 0xAA repeated]
+	// This is intentionally insecure for development/testing only
+	a.Logger.Warn("using default encryption key - NOT SECURE - development only")
+	return "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
 }
 
 func (a *Agent) getJWTToken() string {

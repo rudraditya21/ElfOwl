@@ -45,8 +45,8 @@ func main() {
 	}
 
 	zapLogger.Debug("configuration loaded",
-		zap.String("clusterID", config.ClusterID),
-		zap.String("nodeName", config.NodeName),
+		zap.String("clusterID", config.Agent.ClusterID),
+		zap.String("nodeName", config.Agent.NodeName),
 	)
 
 	// Create agent with all components
@@ -68,8 +68,8 @@ func main() {
 	}
 
 	zapLogger.Info("agent started successfully",
-		zap.String("endpoint", config.OWL.Endpoint),
-		zap.Int("batchSize", config.OWL.Push.BatchSize),
+		zap.String("endpoint", config.Agent.OWL.Endpoint),
+		zap.Int("batchSize", config.Agent.OWL.Push.BatchSize),
 	)
 
 	// Wait for shutdown signal
