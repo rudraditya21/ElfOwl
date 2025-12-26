@@ -24,6 +24,10 @@ type EnrichedEvent struct {
 	File       *FileContext       `json:"file"`
 	Capability *CapabilityContext `json:"capability"`
 
+	// Network and DNS context
+	Network *NetworkContext `json:"network"`
+	DNS     *DNSContext     `json:"dns"`
+
 	// Derived fields
 	Timestamp  time.Time `json:"timestamp"`
 	Severity   string    `json:"severity"`
@@ -45,6 +49,14 @@ type K8sContext struct {
 	OwnerRef                    *OwnerReference   `json:"owner_ref"`
 	AutomountServiceAccountToken bool             `json:"automount_service_account_token"`
 	HasDefaultDenyNetworkPolicy  bool             `json:"has_default_deny_network_policy"`
+	// ANCHOR: Extended K8s fields for Phase 1 RBAC controls - Dec 26, 2025
+	RBACEnforced                bool   `json:"rbac_enforced"`
+	RBACLevel                   int    `json:"rbac_level"`
+	ServiceAccountTokenAge      int64  `json:"service_account_token_age"`
+	ServiceAccountPermissions   int    `json:"service_account_permissions"`
+	RBACPolicyDefined           bool   `json:"rbac_policy_defined"`
+	RolePermissionCount         int    `json:"role_permission_count"`
+	AuditLoggingEnabled         bool   `json:"audit_logging_enabled"`
 }
 
 // OwnerReference identifies the owner of a pod
@@ -62,6 +74,27 @@ type ContainerContext struct {
 	Labels        map[string]string `json:"labels"`
 	Privileged    bool              `json:"privileged"`
 	RunAsRoot     bool              `json:"run_as_root"`
+	// ANCHOR: Extended security context fields for Phase 1 - Dec 26, 2025
+	AllowPrivilegeEscalation bool   `json:"allow_privilege_escalation"`
+	HostNetwork              bool   `json:"host_network"`
+	HostIPC                  bool   `json:"host_ipc"`
+	HostPID                  bool   `json:"host_pid"`
+	SeccompProfile           string `json:"seccomp_profile"`
+	ApparmorProfile          string `json:"apparmor_profile"`
+	SELinuxLevel             string `json:"selinux_level"`
+	ImagePullPolicy          string `json:"image_pull_policy"`
+	ImageScanStatus          string `json:"image_scan_status"`
+	ImageRegistryAuth        bool   `json:"image_registry_auth"`
+	ImageSigned              bool   `json:"image_signed"`
+	MemoryLimit              string `json:"memory_limit"`
+	CPULimit                 string `json:"cpu_limit"`
+	MemoryRequest            string `json:"memory_request"`
+	CPURequest               string `json:"cpu_request"`
+	StorageRequest           string `json:"storage_request"`
+	ReadOnlyFilesystem       bool   `json:"read_only_filesystem"`
+	VolumeType               string `json:"volume_type"`
+	IsolationLevel           int    `json:"isolation_level"`
+	KernelHardening          bool   `json:"kernel_hardening"`
 }
 
 // ProcessContext captures process metadata from goBPF events
@@ -109,4 +142,31 @@ type NodeMetadata struct {
 	Labels   map[string]string
 	Taints   []string
 	Capacity map[string]string
+}
+
+// ANCHOR: Network and DNS contexts for Phase 1 - Dec 26, 2025
+// Support for network policy and DNS rule matching
+
+// NetworkContext captures network metadata from goBPF events
+type NetworkContext struct {
+	SourceIP              string `json:"source_ip"`
+	DestinationIP         string `json:"destination_ip"`
+	SourcePort            uint16 `json:"source_port"`
+	DestinationPort       uint16 `json:"destination_port"`
+	Protocol              string `json:"protocol"`
+	Direction             string `json:"direction"` // inbound, outbound
+	ConnectionState       string `json:"connection_state"`
+	NetworkNamespaceID    uint32 `json:"network_namespace_id"`
+	IngressRestricted     bool   `json:"ingress_restricted"`
+	EgressRestricted      bool   `json:"egress_restricted"`
+	NamespaceIsolation    bool   `json:"namespace_isolation"`
+}
+
+// DNSContext captures DNS query metadata from goBPF events
+type DNSContext struct {
+	QueryName        string `json:"query_name"`
+	QueryType        string `json:"query_type"` // A, AAAA, MX, etc.
+	ResponseCode     int    `json:"response_code"`
+	QueryAllowed     bool   `json:"query_allowed"`
+	AllowedDomains   []string `json:"allowed_domains"`
 }
