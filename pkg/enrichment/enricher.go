@@ -156,26 +156,49 @@ func (e *Enricher) EnrichProcessEvent(
 		k8sCtx.Labels = podMeta.Labels
 	}
 
-	// Build container context with security defaults
-	// ANCHOR: Security context defaults for Phase 2 - Dec 26, 2025
-	// Fields populated with reasonable defaults; will be overridden with pod spec values in Phase 3
+	// Build container context with security context from pod spec or defaults
+	// ANCHOR: Extract security context from pod metadata - Phase 2.2 fix, Dec 26, 2025
+	// Use pod spec security context values if available, otherwise fall back to defaults
 	containerCtx := &ContainerContext{
-		ContainerID:                gobpfEvent.ContainerID,
-		RunAsRoot:                  gobpfEvent.UID == 0,
-		AllowPrivilegeEscalation:   true,  // Default to true (least restrictive)
-		HostNetwork:                false, // Default to false (safe)
-		HostIPC:                    false, // Default to false (safe)
-		HostPID:                    false, // Default to false (safe)
-		SeccompProfile:             "unconfined", // Default to unconfined
-		ApparmorProfile:            "",           // No apparmor by default
-		SELinuxLevel:               "",           // No selinux by default
-		ImagePullPolicy:            "IfNotPresent", // K8s default
-		ReadOnlyFilesystem:         false, // Default to false
-		MemoryLimit:                "",    // No limit by default
-		CPULimit:                   "",    // No limit by default
-		MemoryRequest:              "",    // No request by default
-		CPURequest:                 "",    // No request by default
-		Privileged:                 false, // Default to false
+		ContainerID:  gobpfEvent.ContainerID,
+		RunAsRoot:    false, // Will be set below based on podMeta or goBPF UID
+	}
+
+	// Apply pod security context
+	if podMeta != nil {
+		// Pod-level security context
+		containerCtx.RunAsRoot = (podMeta.RunAsUser == 0) || podMeta.RunAsRootContainer
+		containerCtx.AllowPrivilegeEscalation = podMeta.AllowPrivilegeEscalation
+		containerCtx.Privileged = podMeta.Privileged
+		containerCtx.ReadOnlyFilesystem = podMeta.ReadOnlyRootFilesystem
+		containerCtx.HostNetwork = podMeta.HostNetwork
+		containerCtx.HostIPC = podMeta.HostIPC
+		containerCtx.HostPID = podMeta.HostPID
+		containerCtx.SeccompProfile = podMeta.SeccompProfile
+		containerCtx.ApparmorProfile = podMeta.AppArmorProfile
+		containerCtx.SELinuxLevel = podMeta.SELinuxLevel
+		containerCtx.ImagePullPolicy = podMeta.ImagePullPolicy
+		containerCtx.MemoryLimit = podMeta.MemoryLimit
+		containerCtx.CPULimit = podMeta.CPULimit
+		containerCtx.MemoryRequest = podMeta.MemoryRequest
+		containerCtx.CPURequest = podMeta.CPURequest
+	} else {
+		// Fallback to defaults when pod metadata not available
+		containerCtx.RunAsRoot = gobpfEvent.UID == 0
+		containerCtx.AllowPrivilegeEscalation = true  // Default to true (least restrictive)
+		containerCtx.Privileged = false
+		containerCtx.ReadOnlyFilesystem = false
+		containerCtx.HostNetwork = false
+		containerCtx.HostIPC = false
+		containerCtx.HostPID = false
+		containerCtx.SeccompProfile = "unconfined" // Default to unconfined
+		containerCtx.ApparmorProfile = ""
+		containerCtx.SELinuxLevel = ""
+		containerCtx.ImagePullPolicy = "IfNotPresent" // K8s default
+		containerCtx.MemoryLimit = ""
+		containerCtx.CPULimit = ""
+		containerCtx.MemoryRequest = ""
+		containerCtx.CPURequest = ""
 	}
 
 	return &EnrichedEvent{
