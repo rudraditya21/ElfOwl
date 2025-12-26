@@ -125,6 +125,8 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 	}
 
 	// Container-level security context (from first container)
+	// ANCHOR: Extract container-level RunAsNonRoot to override pod-level setting - Phase 2.2 fix, Dec 26, 2025
+	// Container-level security context takes precedence over pod-level for runAsNonRoot
 	if len(pod.Spec.Containers) > 0 {
 		container := pod.Spec.Containers[0]
 		if container.SecurityContext != nil {
@@ -142,6 +144,10 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 			if container.SecurityContext.RunAsUser != nil {
 				runAsUser = *container.SecurityContext.RunAsUser
 				runAsRootContainer = (runAsUser == 0)
+			}
+			// Container-level RunAsNonRoot overrides pod-level setting
+			if container.SecurityContext.RunAsNonRoot != nil {
+				runAsNonRoot = *container.SecurityContext.RunAsNonRoot
 			}
 		}
 
