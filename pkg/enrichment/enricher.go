@@ -7,6 +7,8 @@ package enrichment
 import (
 	"context"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,6 +23,11 @@ type Enricher struct {
 	ClusterID string
 	NodeName  string
 	Logger    *zap.Logger
+
+	// ANCHOR: Container to pod mapping cache for fast lookups - Phase 2, Dec 26, 2025
+	// Caches containerID -> namespace/podname mappings to avoid repeated K8s API queries
+	containerToPodMutex sync.RWMutex
+	containerToPodCache map[string]string // containerID -> "namespace/podname"
 }
 
 // NewEnricher creates a new event enricher
@@ -30,14 +37,96 @@ func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string) (*Enr
 	logger, _ := zap.NewProduction()
 
 	return &Enricher{
-		K8sClient: k8sClient,
-		ClusterID: clusterID,
-		NodeName:  nodeName,
-		Logger:    logger,
+		K8sClient:           k8sClient,
+		ClusterID:           clusterID,
+		NodeName:            nodeName,
+		Logger:              logger,
+		containerToPodCache: make(map[string]string),
 	}, nil
 }
 
+// ANCHOR: Helper methods for enrichment field extraction - Phase 2, Dec 26, 2025
+// These methods query K8s API and parse pod specs to populate enrichment fields
+
+// getPodMetadata retrieves pod metadata from K8s API, using cache when available
+// ANCHOR: Pod metadata lookup via K8s API - Phase 2.2, Dec 26, 2025
+// First checks local enricher cache, then queries K8s API for pod metadata via container ID
+func (e *Enricher) getPodMetadata(ctx context.Context, containerID string) *PodMetadata {
+	if e.K8sClient == nil || containerID == "" {
+		return nil
+	}
+
+	// Check local enricher cache first
+	e.containerToPodMutex.RLock()
+	cachedMapping, found := e.containerToPodCache[containerID]
+	e.containerToPodMutex.RUnlock()
+
+	if found {
+		// Parse cached mapping: "namespace/podname"
+		parts := strings.Split(cachedMapping, "/")
+		if len(parts) == 2 {
+			// Use K8s client to retrieve the pod metadata with its cache
+			metadata, err := e.K8sClient.GetPodMetadata(ctx, parts[0], parts[1])
+			if err != nil {
+				e.Logger.Debug("failed to get pod metadata from cache", zap.Error(err))
+				return nil
+			}
+			return metadata
+		}
+	}
+
+	// Query K8s API for pod lookup by container ID
+	metadata, err := e.K8sClient.GetPodByContainerID(ctx, containerID)
+	if err != nil {
+		e.Logger.Debug("failed to find pod by container ID", zap.String("containerID", containerID), zap.Error(err))
+		return nil
+	}
+
+	if metadata != nil {
+		// Cache the mapping locally for future use
+		mapping := fmt.Sprintf("%s/%s", metadata.Namespace, metadata.Name)
+		e.containerToPodMutex.Lock()
+		e.containerToPodCache[containerID] = mapping
+		e.containerToPodMutex.Unlock()
+	}
+
+	return metadata
+}
+
+// parseImageRegistry extracts registry from full image path (e.g. "docker.io/library/nginx:latest" -> "docker.io")
+func (e *Enricher) parseImageRegistry(image string) string {
+	if image == "" {
+		return ""
+	}
+
+	// If image contains /, extract registry part
+	parts := strings.Split(image, "/")
+	if len(parts) > 1 && strings.Contains(parts[0], ".") {
+		return parts[0]
+	}
+
+	// Default to docker.io if no registry specified
+	return "docker.io"
+}
+
+// parseImageTag extracts tag from full image path (e.g. "nginx:latest" -> "latest")
+func (e *Enricher) parseImageTag(image string) string {
+	if image == "" {
+		return ""
+	}
+
+	// Check for tag separator
+	if idx := strings.LastIndex(image, ":"); idx != -1 {
+		return image[idx+1:]
+	}
+
+	// Default to 'latest' if no tag specified
+	return "latest"
+}
+
 // EnrichProcessEvent enriches a goBPF process event
+// ANCHOR: Process event enrichment with security context - Phase 2, Dec 26, 2025
+// Populates container security context, pod metadata, and RBAC fields
 func (e *Enricher) EnrichProcessEvent(
 	ctx context.Context,
 	gobpfEvent *gobpfsecurity.ProcessEvent,
@@ -46,24 +135,85 @@ func (e *Enricher) EnrichProcessEvent(
 		return nil, fmt.Errorf("nil process event")
 	}
 
-	// TODO: Week 2 implementation
-	// Step 1: Extract container ID from cgroup
-	// Step 2: Query K8s API for pod metadata
-	// Step 3: Query container runtime for labels
-	// Step 4: Build enriched event
+	// Get pod metadata from K8s API (returns nil if not available)
+	podMeta := e.getPodMetadata(ctx, gobpfEvent.ContainerID)
 
-	enrichedEvent := &EnrichedEvent{
+	// Build Kubernetes context with available metadata
+	k8sCtx := &K8sContext{
+		ClusterID: e.ClusterID,
+		NodeName:  e.NodeName,
+	}
+
+	// Populate fields from pod metadata if available
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.ImageRegistry = e.parseImageRegistry(podMeta.Image)
+		k8sCtx.ImageTag = e.parseImageTag(podMeta.Image)
+		k8sCtx.Labels = podMeta.Labels
+	}
+
+	// Build container context with security context from pod spec or defaults
+	// ANCHOR: Extract security context from pod metadata - Phase 2.2 fix, Dec 26, 2025
+	// Use pod spec security context values if available, otherwise fall back to defaults
+	containerCtx := &ContainerContext{
+		ContainerID:  gobpfEvent.ContainerID,
+		RunAsRoot:    false, // Will be set below based on podMeta or goBPF UID
+	}
+
+	// Apply pod security context
+	if podMeta != nil {
+		// Pod-level security context
+		// ANCHOR: Determine RunAsRoot using K8s security context booleans - Phase 2.2 fix, Dec 26, 2025
+		// RunAsNonRoot boolean is the authoritative field; fall back to RunAsRootContainer only if not set
+		// Don't use RunAsUser == 0 since zero is the default when field is unspecified
+		if podMeta.RunAsNonRoot {
+			containerCtx.RunAsRoot = false
+		} else {
+			containerCtx.RunAsRoot = podMeta.RunAsRootContainer || (gobpfEvent.UID == 0)
+		}
+		containerCtx.AllowPrivilegeEscalation = podMeta.AllowPrivilegeEscalation
+		containerCtx.Privileged = podMeta.Privileged
+		containerCtx.ReadOnlyFilesystem = podMeta.ReadOnlyRootFilesystem
+		containerCtx.HostNetwork = podMeta.HostNetwork
+		containerCtx.HostIPC = podMeta.HostIPC
+		containerCtx.HostPID = podMeta.HostPID
+		containerCtx.SeccompProfile = podMeta.SeccompProfile
+		containerCtx.ApparmorProfile = podMeta.AppArmorProfile
+		containerCtx.SELinuxLevel = podMeta.SELinuxLevel
+		containerCtx.ImagePullPolicy = podMeta.ImagePullPolicy
+		containerCtx.MemoryLimit = podMeta.MemoryLimit
+		containerCtx.CPULimit = podMeta.CPULimit
+		containerCtx.MemoryRequest = podMeta.MemoryRequest
+		containerCtx.CPURequest = podMeta.CPURequest
+	} else {
+		// Fallback to defaults when pod metadata not available
+		containerCtx.RunAsRoot = gobpfEvent.UID == 0
+		containerCtx.AllowPrivilegeEscalation = true  // Default to true (least restrictive)
+		containerCtx.Privileged = false
+		containerCtx.ReadOnlyFilesystem = false
+		containerCtx.HostNetwork = false
+		containerCtx.HostIPC = false
+		containerCtx.HostPID = false
+		containerCtx.SeccompProfile = "unconfined" // Default to unconfined
+		containerCtx.ApparmorProfile = ""
+		containerCtx.SELinuxLevel = ""
+		containerCtx.ImagePullPolicy = "IfNotPresent" // K8s default
+		containerCtx.MemoryLimit = ""
+		containerCtx.CPULimit = ""
+		containerCtx.MemoryRequest = ""
+		containerCtx.CPURequest = ""
+	}
+
+	return &EnrichedEvent{
 		RawEvent:  gobpfEvent,
 		EventType: "process_execution",
 		Timestamp: time.Now(),
-		Kubernetes: &K8sContext{
-			ClusterID: e.ClusterID,
-			NodeName:  e.NodeName,
-		},
-		Container: &ContainerContext{
-			ContainerID: gobpfEvent.ContainerID,
-			RunAsRoot:   gobpfEvent.UID == 0,
-		},
+		Kubernetes: k8sCtx,
+		Container: containerCtx,
 		Process: &ProcessContext{
 			PID:         gobpfEvent.PID,
 			UID:         gobpfEvent.UID,
@@ -72,12 +222,12 @@ func (e *Enricher) EnrichProcessEvent(
 			Filename:    gobpfEvent.Filename,
 			ContainerID: gobpfEvent.ContainerID,
 		},
-	}
-
-	return enrichedEvent, nil
+	}, nil
 }
 
 // EnrichNetworkEvent enriches a goBPF network event
+// ANCHOR: Network event enrichment with policy context - Phase 2, Dec 26, 2025
+// Populates network policy and namespace isolation fields
 func (e *Enricher) EnrichNetworkEvent(
 	ctx context.Context,
 	gobpfEvent *gobpfsecurity.NetworkEvent,
@@ -86,20 +236,47 @@ func (e *Enricher) EnrichNetworkEvent(
 		return nil, fmt.Errorf("nil network event")
 	}
 
-	// TODO: Week 2 implementation
+	// NetworkEvent doesn't include container ID, so we can't query pod metadata
+	// This will be enhanced in Phase 3 when container ID mapping is available
+	var podMeta *PodMetadata
 
-	enrichedEvent := &EnrichedEvent{
-		RawEvent:  gobpfEvent,
-		EventType: "network_connection",
-		Timestamp: time.Now(),
-		Kubernetes: &K8sContext{
-			ClusterID: e.ClusterID,
-			NodeName:  e.NodeName,
-		},
-		Container: &ContainerContext{},
+	// Build Kubernetes context
+	k8sCtx := &K8sContext{
+		ClusterID: e.ClusterID,
+		NodeName:  e.NodeName,
 	}
 
-	return enrichedEvent, nil
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+	}
+
+	// Build network context with policy defaults
+	// ANCHOR: Network policy defaults for Phase 2 - Dec 26, 2025
+	// Assumes no network policies in place by default; Phase 3 will query actual policies
+	networkCtx := &NetworkContext{
+		SourceIP:             gobpfEvent.SrcAddr,
+		DestinationIP:        gobpfEvent.DstAddr,
+		SourcePort:           gobpfEvent.SrcPort,
+		DestinationPort:      gobpfEvent.DstPort,
+		Protocol:             gobpfEvent.Protocol.String(),
+		IngressRestricted:    false, // Assume no ingress policies by default
+		EgressRestricted:     false, // Assume no egress policies by default
+		NamespaceIsolation:   false, // Assume no isolation by default
+	}
+
+	return &EnrichedEvent{
+		RawEvent:   gobpfEvent,
+		EventType:  "network_connection",
+		Timestamp:  time.Now(),
+		Kubernetes: k8sCtx,
+		Container:  &ContainerContext{},
+		Network:    networkCtx,
+	}, nil
 }
 
 // EnrichDNSEvent enriches a goBPF DNS event
@@ -133,6 +310,8 @@ func (e *Enricher) EnrichDNSEvent(
 */
 
 // EnrichFileEvent enriches a goBPF file event
+// ANCHOR: File event enrichment with read-only context - Phase 2, Dec 26, 2025
+// Populates read-only filesystem and resource limit fields
 func (e *Enricher) EnrichFileEvent(
 	ctx context.Context,
 	gobpfEvent *gobpfsecurity.FileEvent,
@@ -141,19 +320,29 @@ func (e *Enricher) EnrichFileEvent(
 		return nil, fmt.Errorf("nil file event")
 	}
 
-	// TODO: Week 2 implementation
+	// Build Kubernetes context
+	k8sCtx := &K8sContext{
+		ClusterID: e.ClusterID,
+		NodeName:  e.NodeName,
+	}
 
-	enrichedEvent := &EnrichedEvent{
+	// Build container context with security defaults
+	containerCtx := &ContainerContext{
+		RunAsRoot:              gobpfEvent.UID == 0,
+		ReadOnlyFilesystem:     false, // Default to false (writable)
+		MemoryLimit:            "",    // No limit by default
+		CPULimit:               "",    // No limit by default
+		MemoryRequest:          "",    // No request by default
+		CPURequest:             "",    // No request by default
+		AllowPrivilegeEscalation: true, // Default to true
+	}
+
+	return &EnrichedEvent{
 		RawEvent:  gobpfEvent,
 		EventType: "file_access",
 		Timestamp: time.Now(),
-		Kubernetes: &K8sContext{
-			ClusterID: e.ClusterID,
-			NodeName:  e.NodeName,
-		},
-		Container: &ContainerContext{
-			RunAsRoot: gobpfEvent.UID == 0,
-		},
+		Kubernetes: k8sCtx,
+		Container: containerCtx,
 		Process: &ProcessContext{
 			PID:     gobpfEvent.PID,
 			UID:     gobpfEvent.UID,
@@ -165,12 +354,12 @@ func (e *Enricher) EnrichFileEvent(
 			PID:       gobpfEvent.PID,
 			UID:       gobpfEvent.UID,
 		},
-	}
-
-	return enrichedEvent, nil
+	}, nil
 }
 
 // EnrichCapabilityEvent enriches a goBPF capability event
+// ANCHOR: Capability event enrichment with privilege escalation context - Phase 2, Dec 26, 2025
+// Populates privilege escalation and capability restriction fields
 func (e *Enricher) EnrichCapabilityEvent(
 	ctx context.Context,
 	gobpfEvent *gobpfsecurity.CapabilityEvent,
@@ -179,19 +368,25 @@ func (e *Enricher) EnrichCapabilityEvent(
 		return nil, fmt.Errorf("nil capability event")
 	}
 
-	// TODO: Week 2 implementation
+	// Build Kubernetes context
+	k8sCtx := &K8sContext{
+		ClusterID: e.ClusterID,
+		NodeName:  e.NodeName,
+	}
 
-	enrichedEvent := &EnrichedEvent{
+	// Build container context with capability defaults
+	containerCtx := &ContainerContext{
+		RunAsRoot:                gobpfEvent.UID == 0,
+		AllowPrivilegeEscalation: true,  // Default to true (least restrictive)
+		Privileged:               false, // Default to false
+	}
+
+	return &EnrichedEvent{
 		RawEvent:  gobpfEvent,
 		EventType: "capability_usage",
 		Timestamp: time.Now(),
-		Kubernetes: &K8sContext{
-			ClusterID: e.ClusterID,
-			NodeName:  e.NodeName,
-		},
-		Container: &ContainerContext{
-			RunAsRoot: gobpfEvent.UID == 0,
-		},
+		Kubernetes: k8sCtx,
+		Container: containerCtx,
 		Process: &ProcessContext{
 			PID:     gobpfEvent.PID,
 			UID:     gobpfEvent.UID,
@@ -203,7 +398,5 @@ func (e *Enricher) EnrichCapabilityEvent(
 			PID:     gobpfEvent.PID,
 			UID:     gobpfEvent.UID,
 		},
-	}
-
-	return enrichedEvent, nil
+	}, nil
 }

@@ -197,6 +197,44 @@ func (e *Engine) extractField(event *enrichment.EnrichedEvent, fieldPath string)
 		if event.Kubernetes != nil {
 			return event.Kubernetes.HasDefaultDenyNetworkPolicy
 		}
+	// ANCHOR: Extended Kubernetes fields for Phase 1 - Dec 26, 2025
+	// New fields for RBAC and image registry controls
+	case "kubernetes.image_registry":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.ImageRegistry
+		}
+	case "kubernetes.image_tag":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.ImageTag
+		}
+	case "kubernetes.rbac_enforced":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.RBACEnforced
+		}
+	case "kubernetes.rbac_level":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.RBACLevel
+		}
+	case "kubernetes.service_account_token_age":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.ServiceAccountTokenAge
+		}
+	case "kubernetes.service_account_permissions":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.ServiceAccountPermissions
+		}
+	case "kubernetes.rbac_policy_defined":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.RBACPolicyDefined
+		}
+	case "kubernetes.role_permission_count":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.RolePermissionCount
+		}
+	case "kubernetes.audit_logging_enabled":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.AuditLoggingEnabled
+		}
 
 	// Container context fields
 	case "container.id":
@@ -218,6 +256,88 @@ func (e *Engine) extractField(event *enrichment.EnrichedEvent, fieldPath string)
 	case "container.run_as_root":
 		if event.Container != nil {
 			return event.Container.RunAsRoot
+		}
+	// ANCHOR: Extended container security context fields - Dec 26, 2025
+	// New fields for Phase 1 CIS control expansion
+	case "container.allow_privilege_escalation":
+		if event.Container != nil {
+			return event.Container.AllowPrivilegeEscalation
+		}
+	case "container.host_network":
+		if event.Container != nil {
+			return event.Container.HostNetwork
+		}
+	case "container.host_ipc":
+		if event.Container != nil {
+			return event.Container.HostIPC
+		}
+	case "container.host_pid":
+		if event.Container != nil {
+			return event.Container.HostPID
+		}
+	case "container.seccomp_profile":
+		if event.Container != nil {
+			return event.Container.SeccompProfile
+		}
+	case "container.apparmor_profile":
+		if event.Container != nil {
+			return event.Container.ApparmorProfile
+		}
+	case "container.image_pull_policy":
+		if event.Container != nil {
+			return event.Container.ImagePullPolicy
+		}
+	case "container.image_scan_status":
+		if event.Container != nil {
+			return event.Container.ImageScanStatus
+		}
+	case "container.image_registry_auth":
+		if event.Container != nil {
+			return event.Container.ImageRegistryAuth
+		}
+	case "container.image_signed":
+		if event.Container != nil {
+			return event.Container.ImageSigned
+		}
+	case "container.memory_limit":
+		if event.Container != nil {
+			return event.Container.MemoryLimit
+		}
+	case "container.cpu_limit":
+		if event.Container != nil {
+			return event.Container.CPULimit
+		}
+	case "container.memory_request":
+		if event.Container != nil {
+			return event.Container.MemoryRequest
+		}
+	case "container.cpu_request":
+		if event.Container != nil {
+			return event.Container.CPURequest
+		}
+	case "container.storage_request":
+		if event.Container != nil {
+			return event.Container.StorageRequest
+		}
+	case "container.read_only_filesystem":
+		if event.Container != nil {
+			return event.Container.ReadOnlyFilesystem
+		}
+	case "container.volume_type":
+		if event.Container != nil {
+			return event.Container.VolumeType
+		}
+	case "container.selinux_level":
+		if event.Container != nil {
+			return event.Container.SELinuxLevel
+		}
+	case "container.isolation_level":
+		if event.Container != nil {
+			return event.Container.IsolationLevel
+		}
+	case "container.kernel_hardening":
+		if event.Container != nil {
+			return event.Container.KernelHardening
 		}
 
 	// Process fields
@@ -252,6 +372,26 @@ func (e *Engine) extractField(event *enrichment.EnrichedEvent, fieldPath string)
 	case "capability.allowed":
 		if event.Capability != nil {
 			return event.Capability.Allowed
+		}
+
+	// ANCHOR: Network context fields for Phase 1 - Dec 26, 2025
+	// Support for network policy and DNS rules
+	case "network.ingress_restricted":
+		if event.Network != nil {
+			return event.Network.IngressRestricted
+		}
+	case "network.egress_restricted":
+		if event.Network != nil {
+			return event.Network.EgressRestricted
+		}
+	case "network.namespace_isolation":
+		if event.Network != nil {
+			return event.Network.NamespaceIsolation
+		}
+
+	case "dns.query_allowed":
+		if event.DNS != nil {
+			return event.DNS.QueryAllowed
 		}
 
 	default:

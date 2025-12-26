@@ -40,6 +40,11 @@ Thumbs.db
 *.exe
 *.war
 
+# Go binaries
+main
+*.out
+cmd/*/cmd
+
 # Large media files
 *.mp4
 *.tiff

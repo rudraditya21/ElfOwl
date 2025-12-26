@@ -10,20 +10,22 @@ import (
 
 // MetadataCache caches Kubernetes metadata with TTL
 type MetadataCache struct {
-	mu        sync.RWMutex
-	pods      map[string]*PodMetadata
-	nodes     map[string]*NodeMetadata
-	expiry    map[string]time.Time
-	ttlSeconds int64
+	mu                sync.RWMutex
+	pods              map[string]*PodMetadata
+	nodes             map[string]*NodeMetadata
+	containerMappings map[string]string // containerID -> "namespace/podname"
+	expiry            map[string]time.Time
+	ttlSeconds        int64
 }
 
 // NewMetadataCache creates a new metadata cache
 func NewMetadataCache(ttlSeconds int64) *MetadataCache {
 	return &MetadataCache{
-		pods:       make(map[string]*PodMetadata),
-		nodes:      make(map[string]*NodeMetadata),
-		expiry:     make(map[string]time.Time),
-		ttlSeconds: ttlSeconds,
+		pods:              make(map[string]*PodMetadata),
+		nodes:             make(map[string]*NodeMetadata),
+		containerMappings: make(map[string]string),
+		expiry:            make(map[string]time.Time),
+		ttlSeconds:        ttlSeconds,
 	}
 }
 
@@ -84,6 +86,7 @@ func (m *MetadataCache) Clear() {
 
 	m.pods = make(map[string]*PodMetadata)
 	m.nodes = make(map[string]*NodeMetadata)
+	m.containerMappings = make(map[string]string)
 	m.expiry = make(map[string]time.Time)
 }
 
@@ -93,4 +96,30 @@ func (m *MetadataCache) Size() int {
 	defer m.mu.RUnlock()
 
 	return len(m.pods) + len(m.nodes)
+}
+
+// ANCHOR: Container ID mapping cache for fast lookups - Phase 2.2, Dec 26, 2025
+// Maps container IDs (from cgroups) to "namespace/podname" for quick pod resolution
+
+// GetContainerMapping retrieves cached container ID to pod mapping
+func (m *MetadataCache) GetContainerMapping(containerID string) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// Check if entry has expired
+	if expiry, ok := m.expiry[containerID]; ok && time.Now().After(expiry) {
+		return "", false
+	}
+
+	mapping, found := m.containerMappings[containerID]
+	return mapping, found
+}
+
+// SetContainerMapping stores container ID to pod name mapping
+func (m *MetadataCache) SetContainerMapping(containerID, namespacedPodName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.containerMappings[containerID] = namespacedPodName
+	m.expiry[containerID] = time.Now().Add(time.Duration(m.ttlSeconds) * time.Second)
 }
