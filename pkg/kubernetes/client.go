@@ -535,9 +535,11 @@ func (c *Client) GetNetworkPolicyStatus(ctx context.Context, namespace, podName 
 	status.EgressRestricted = egressPolicies > 0 || defaultDenyEgress
 
 	// Check for default-deny NetworkPolicy in the namespace (namespace-wide isolation)
+	// ANCHOR: Empty selector check for default deny policies - Phase 2.4 fix, Dec 26, 2025
+	// Empty selector (both MatchLabels and MatchExpressions) means policy applies to all pods
 	for _, netpol := range netpols.Items {
 		// Default deny policy has empty pod selector (applies to all pods in namespace)
-		if netpol.Spec.PodSelector.Size() == 0 {
+		if len(netpol.Spec.PodSelector.MatchLabels) == 0 && len(netpol.Spec.PodSelector.MatchExpressions) == 0 {
 			// This is a default deny policy - namespace isolation is enabled
 			status.NamespaceIsolation = true
 			break
@@ -548,22 +550,69 @@ func (c *Client) GetNetworkPolicyStatus(ctx context.Context, namespace, podName 
 }
 
 // selectorMatches checks if pod labels match a label selector
-// ANCHOR: Label selector matching for NetworkPolicy evaluation - Phase 2.4, Dec 26, 2025
-// Returns true if pod labels match all requirements in the selector
+// ANCHOR: Label selector matching with MatchExpressions support - Phase 2.4 fix, Dec 26, 2025
+// Returns true if pod labels match all requirements in the selector (both MatchLabels and MatchExpressions)
+// Empty selector (no MatchLabels and no MatchExpressions) matches all pods
 func selectorMatches(labels map[string]string, selector metav1.LabelSelector) bool {
 	if labels == nil {
-		return selector.Size() == 0
+		labels = make(map[string]string)
 	}
 
-	// Check label-based requirements
+	// Empty selector (no MatchLabels and no MatchExpressions) matches all pods
+	if len(selector.MatchLabels) == 0 && len(selector.MatchExpressions) == 0 {
+		return true
+	}
+
+	// Check label-based requirements (MatchLabels)
 	for key, value := range selector.MatchLabels {
 		if labels[key] != value {
 			return false
 		}
 	}
 
-	// For now, we don't evaluate MatchExpressions (complex logic)
-	// This is a simplified implementation that handles the common case
+	// Check expression-based requirements (MatchExpressions)
+	// Each expression must be satisfied for the match to succeed
+	for _, expr := range selector.MatchExpressions {
+		labelValue, labelExists := labels[expr.Key]
+
+		switch expr.Operator {
+		case metav1.LabelSelectorOpIn:
+			// Label value must be in the values list
+			found := false
+			for _, v := range expr.Values {
+				if labelValue == v {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false
+			}
+
+		case metav1.LabelSelectorOpNotIn:
+			// Label value must NOT be in the values list
+			if labelExists {
+				for _, v := range expr.Values {
+					if labelValue == v {
+						return false
+					}
+				}
+			}
+
+		case metav1.LabelSelectorOpExists:
+			// Label key must exist
+			if !labelExists {
+				return false
+			}
+
+		case metav1.LabelSelectorOpDoesNotExist:
+			// Label key must NOT exist
+			if labelExists {
+				return false
+			}
+		}
+	}
+
 	return true
 }
 
@@ -580,9 +629,11 @@ func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace 
 		return false
 	}
 
+	// ANCHOR: Empty selector check for namespace default deny - Phase 2.4 fix, Dec 26, 2025
+	// Empty selector (both MatchLabels and MatchExpressions) means policy applies to all pods
 	for _, netpol := range netpols.Items {
 		// Check if this is a default deny policy (empty pod selector)
-		if netpol.Spec.PodSelector.Size() == 0 {
+		if len(netpol.Spec.PodSelector.MatchLabels) == 0 && len(netpol.Spec.PodSelector.MatchExpressions) == 0 {
 			return true
 		}
 	}
