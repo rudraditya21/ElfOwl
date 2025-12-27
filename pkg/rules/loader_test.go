@@ -1,12 +1,15 @@
 // ANCHOR: Unit tests for rule loading functionality - Phase 3.4 Week 3
-// Tests file-based YAML loading with validation and error handling
+// Tests file-based and ConfigMap YAML loading with validation and error handling
 
 package rules
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"k8s.io/client-go/kubernetes"
 )
 
 // TestLoadRulesFromFile tests loading rules from YAML file
@@ -465,6 +468,73 @@ func TestConvertYAMLToRule(t *testing.T) {
 
 			if len(rule.Conditions) != len(tt.ruleYAML.Conditions) {
 				t.Errorf("expected %d conditions, got %d", len(tt.ruleYAML.Conditions), len(rule.Conditions))
+			}
+		})
+	}
+}
+
+// TestLoadRulesFromConfigMap tests loading rules from Kubernetes ConfigMap
+// ANCHOR: ConfigMap rule loading tests - Phase 3.2 Week 3
+// Tests file-less rule loading via K8s API with proper error handling
+func TestLoadRulesFromConfigMapBasics(t *testing.T) {
+	tests := []struct {
+		name               string
+		configMapName      string
+		configMapNamespace string
+		clientset          interface{}
+		shouldFail         bool
+		expectedError      string
+	}{
+		{
+			name:               "Empty ConfigMap name",
+			configMapName:      "",
+			configMapNamespace: "default",
+			clientset:          nil,
+			shouldFail:         true,
+			expectedError:      "ConfigMap name cannot be empty",
+		},
+		{
+			name:               "Empty namespace",
+			configMapName:      "rules",
+			configMapNamespace: "",
+			clientset:          nil,
+			shouldFail:         true,
+			expectedError:      "ConfigMap namespace cannot be empty",
+		},
+		{
+			name:               "Nil clientset",
+			configMapName:      "rules",
+			configMapNamespace: "default",
+			clientset:          nil,
+			shouldFail:         true,
+			expectedError:      "clientset cannot be nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a mock context
+			ctx := context.Background()
+
+			// Type assert to get proper error messages
+			var clientset *kubernetes.Clientset
+			if tt.clientset != nil {
+				clientset = tt.clientset.(*kubernetes.Clientset)
+			}
+
+			// Use default data key "rules.yaml" for these tests
+		_, err := LoadRulesFromConfigMap(ctx, clientset, tt.configMapName, tt.configMapNamespace, "rules.yaml")
+
+			if tt.shouldFail {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				} else if tt.expectedError != "" && !containsSubstring(err.Error(), tt.expectedError) {
+					t.Errorf("expected error containing %q, got %q", tt.expectedError, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
 			}
 		})
 	}

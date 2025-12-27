@@ -5,12 +5,14 @@
 package rules
 
 import (
+	"context"
 	"fmt"
 	"reflect"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/udyansh/elf-owl/pkg/enrichment"
 )
@@ -19,6 +21,19 @@ import (
 type Engine struct {
 	Rules  []*Rule
 	Logger *zap.Logger
+}
+
+// EngineConfig defines configuration for rule engine initialization
+// ANCHOR: Engine configuration with flexible rule sourcing - Phase 3.2 Week 3
+// Supports loading rules from file, ConfigMap, or hardcoded defaults
+// Implements fallback chain: file → ConfigMap → hardcoded CISControls
+type EngineConfig struct {
+	RuleFilePath       string                // Path to YAML rules file
+	ConfigMapName      string                // Kubernetes ConfigMap name
+	ConfigMapNamespace string                // Kubernetes ConfigMap namespace
+	ConfigMapDataKey   string                // ConfigMap data key for rule YAML (default: "rules.yaml")
+	K8sClientset       *kubernetes.Clientset // K8s client for ConfigMap API access
+	Ctx                context.Context       // Context for K8s API calls
 }
 
 // Rule defines a CIS control detection rule
@@ -53,6 +68,8 @@ type Violation struct {
 // ANCHOR: Flexible rule engine initialization with fallback chain - Phase 3.3 Week 3
 // Attempts to load rules from optional file path, falls back to hardcoded rules
 // Fallback chain: file (if provided) → hardcoded CISControls
+// Backward compatible with old signature: NewEngine(filePath...string)
+// New signature: NewEngine() uses default config, or NewEngineWithConfig() for advanced options
 func NewEngine(ruleFilePath ...string) (*Engine, error) {
 	logger, _ := zap.NewProduction()
 
@@ -83,6 +100,103 @@ func NewEngine(ruleFilePath ...string) (*Engine, error) {
 		Logger: logger,
 	}
 
+	return engine, nil
+}
+
+// NewEngineWithConfig creates a new rule engine with comprehensive configuration
+// ANCHOR: Advanced engine initialization with file and ConfigMap support - Phase 3.2 Week 3
+// Implements full fallback chain: file → ConfigMap → hardcoded CISControls
+// Allows fine-grained control over rule source selection
+func NewEngineWithConfig(config *EngineConfig) (*Engine, error) {
+	// Validate config is not nil
+	if config == nil {
+		return nil, fmt.Errorf("EngineConfig cannot be nil")
+	}
+
+	logger, _ := zap.NewProduction()
+
+	// Set default ConfigMap data key if not specified
+	dataKey := config.ConfigMapDataKey
+	if dataKey == "" {
+		dataKey = "rules.yaml"
+	}
+
+	var rules []*Rule
+	var ruleSource string
+
+	// Fallback chain: file → ConfigMap → hardcoded rules
+	if config.RuleFilePath != "" {
+		loadedRules, err := LoadRulesFromFile(config.RuleFilePath)
+		if err != nil {
+			logger.Warn("failed to load rules from file, trying ConfigMap",
+				zap.String("file", config.RuleFilePath),
+				zap.Error(err))
+
+			// Try ConfigMap as fallback
+			if config.ConfigMapName != "" && config.ConfigMapNamespace != "" && config.K8sClientset != nil {
+				if config.Ctx == nil {
+					config.Ctx = context.Background()
+				}
+				loadedRules, err := LoadRulesFromConfigMap(config.Ctx, config.K8sClientset, config.ConfigMapName, config.ConfigMapNamespace, dataKey)
+				if err != nil {
+					logger.Warn("failed to load rules from ConfigMap, using hardcoded rules",
+						zap.String("configmap", config.ConfigMapName),
+						zap.String("namespace", config.ConfigMapNamespace),
+						zap.Error(err))
+					rules = loadCISRules()
+					ruleSource = "hardcoded"
+				} else {
+					logger.Info("successfully loaded rules from ConfigMap",
+						zap.String("configmap", config.ConfigMapName),
+						zap.String("namespace", config.ConfigMapNamespace),
+						zap.Int("rule_count", len(loadedRules)))
+					rules = loadedRules
+					ruleSource = "configmap"
+				}
+			} else {
+				rules = loadCISRules()
+				ruleSource = "hardcoded"
+			}
+		} else {
+			logger.Info("successfully loaded rules from file",
+				zap.String("file", config.RuleFilePath),
+				zap.Int("rule_count", len(loadedRules)))
+			rules = loadedRules
+			ruleSource = "file"
+		}
+	} else if config.ConfigMapName != "" && config.ConfigMapNamespace != "" && config.K8sClientset != nil {
+		// Try ConfigMap if no file configured
+		if config.Ctx == nil {
+			config.Ctx = context.Background()
+		}
+		loadedRules, err := LoadRulesFromConfigMap(config.Ctx, config.K8sClientset, config.ConfigMapName, config.ConfigMapNamespace, dataKey)
+		if err != nil {
+			logger.Warn("failed to load rules from ConfigMap, using hardcoded rules",
+				zap.String("configmap", config.ConfigMapName),
+				zap.String("namespace", config.ConfigMapNamespace),
+				zap.Error(err))
+			rules = loadCISRules()
+			ruleSource = "hardcoded"
+		} else {
+			logger.Info("successfully loaded rules from ConfigMap",
+				zap.String("configmap", config.ConfigMapName),
+				zap.String("namespace", config.ConfigMapNamespace),
+				zap.Int("rule_count", len(loadedRules)))
+			rules = loadedRules
+			ruleSource = "configmap"
+		}
+	} else {
+		// No file or ConfigMap configured, use hardcoded rules
+		rules = loadCISRules()
+		ruleSource = "hardcoded"
+	}
+
+	engine := &Engine{
+		Rules:  rules,
+		Logger: logger,
+	}
+
+	logger.Info("rule engine initialized", zap.String("rule_source", ruleSource))
 	return engine, nil
 }
 

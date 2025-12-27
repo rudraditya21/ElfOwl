@@ -57,6 +57,14 @@ func NewClient(inCluster bool) (*Client, error) {
 	}, nil
 }
 
+// GetClientset returns the underlying Kubernetes clientset
+// ANCHOR: Clientset accessor for external API usage - Phase 3.2 Week 3
+// Allows other components (like rule engine) to make K8s API calls
+// Use this to access the clientset for ConfigMap reads or other K8s operations
+func (c *Client) GetClientset() *kubernetes.Clientset {
+	return c.clientset
+}
+
 // GetPodMetadata retrieves pod metadata from K8s API
 // ANCHOR: Pod metadata query from K8s API - Phase 2.2, Dec 26, 2025
 // Retrieves pod name, namespace, UID, service account, image, and labels

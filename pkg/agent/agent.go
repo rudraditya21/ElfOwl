@@ -155,18 +155,31 @@ func NewAgent(config *Config) (*Agent, error) {
 	agent.K8sClient = k8sClient
 	agent.Logger.Info("kubernetes client initialized")
 
-	// Initialize rule engine with optional rule file path
-	// ANCHOR: Rule engine initialization with configurable rule source - Phase 3.1 Week 3
-	// Supports loading rules from YAML file, ConfigMap, or hardcoded defaults
+	// Initialize rule engine with configurable rule source
+	// ANCHOR: Rule engine initialization with file and ConfigMap support - Phase 3.2 Week 3
+	// Supports loading rules from YAML file, Kubernetes ConfigMap, or hardcoded defaults
 	// Fallback chain: file (if configured) → ConfigMap (if configured) → hardcoded CISControls
-	ruleEngine, err := rules.NewEngine(config.Agent.Rules.FilePath)
+	engineConfig := &rules.EngineConfig{
+		RuleFilePath:      config.Agent.Rules.FilePath,
+		ConfigMapName:     config.Agent.Rules.ConfigMap.Name,
+		ConfigMapNamespace: config.Agent.Rules.ConfigMap.Namespace,
+		K8sClientset:      k8sClient.GetClientset(), // Pass K8s client for ConfigMap API access
+		Ctx:               context.Background(),
+	}
+	ruleEngine, err := rules.NewEngineWithConfig(engineConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rule engine: %w", err)
 	}
 	agent.RuleEngine = ruleEngine
+
+	// Log which rule source was used
 	if config.Agent.Rules.FilePath != "" {
 		agent.Logger.Info("rule engine initialized with file",
 			zap.String("file", config.Agent.Rules.FilePath))
+	} else if config.Agent.Rules.ConfigMap.Name != "" {
+		agent.Logger.Info("rule engine initialized with ConfigMap",
+			zap.String("configmap", config.Agent.Rules.ConfigMap.Name),
+			zap.String("namespace", config.Agent.Rules.ConfigMap.Namespace))
 	} else {
 		agent.Logger.Info("rule engine initialized with default hardcoded rules")
 	}

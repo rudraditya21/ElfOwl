@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 	"gopkg.in/yaml.v3"
 )
 
@@ -125,12 +127,58 @@ func convertYAMLToRule(ruleYAML *RuleYAML) (*Rule, error) {
 // LoadRulesFromConfigMap loads rules from a Kubernetes ConfigMap
 // ANCHOR: ConfigMap-based rule loading via K8s API - Phase 3.2 Week 3
 // Queries K8s API server for ConfigMap in specified namespace
-// Parses YAML content from ConfigMap data field
-func LoadRulesFromConfigMap(ctx context.Context, configMapName, configMapNamespace string) ([]*Rule, error) {
-	// TODO: Phase 3.2 implementation
-	// 1. Query K8s API for ConfigMap
-	// 2. Parse YAML rule definitions from ConfigMap.Data["rules.yaml"]
-	// 3. Return loaded rules
+// Parses YAML content from ConfigMap data field using standard K8s clientset
+// Supports configurable data key (e.g., "rules.yaml", "cis-controls.yaml", etc.)
+func LoadRulesFromConfigMap(ctx context.Context, clientset *kubernetes.Clientset, configMapName, configMapNamespace, dataKey string) ([]*Rule, error) {
+	if configMapName == "" {
+		return nil, fmt.Errorf("ConfigMap name cannot be empty")
+	}
+	if configMapNamespace == "" {
+		return nil, fmt.Errorf("ConfigMap namespace cannot be empty")
+	}
+	if dataKey == "" {
+		return nil, fmt.Errorf("ConfigMap data key cannot be empty")
+	}
 
-	return nil, fmt.Errorf("not yet implemented")
+	if clientset == nil {
+		return nil, fmt.Errorf("clientset cannot be nil")
+	}
+
+	// Query K8s API for ConfigMap
+	configMap, err := clientset.CoreV1().ConfigMaps(configMapNamespace).Get(ctx, configMapName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ConfigMap %s/%s: %w", configMapNamespace, configMapName, err)
+	}
+
+	// Extract YAML content from ConfigMap data using specified key
+	yamlContent, exists := configMap.Data[dataKey]
+	if !exists {
+		return nil, fmt.Errorf("ConfigMap %s/%s does not contain '%s' key", configMapNamespace, configMapName, dataKey)
+	}
+
+	if yamlContent == "" {
+		return nil, fmt.Errorf("rules.yaml in ConfigMap %s/%s is empty", configMapNamespace, configMapName)
+	}
+
+	// Parse YAML content
+	var rulesYAML []RuleYAML
+	if err := yaml.Unmarshal([]byte(yamlContent), &rulesYAML); err != nil {
+		return nil, fmt.Errorf("failed to parse YAML from ConfigMap %s/%s: %w", configMapNamespace, configMapName, err)
+	}
+
+	if len(rulesYAML) == 0 {
+		return nil, fmt.Errorf("no rules found in ConfigMap %s/%s", configMapNamespace, configMapName)
+	}
+
+	// Convert YAML rules to Rule structs
+	rules := make([]*Rule, 0, len(rulesYAML))
+	for i, ruleYAML := range rulesYAML {
+		rule, err := convertYAMLToRule(&ruleYAML)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert rule %d (%s) from ConfigMap %s/%s: %w", i+1, ruleYAML.ControlID, configMapNamespace, configMapName, err)
+		}
+		rules = append(rules, rule)
+	}
+
+	return rules, nil
 }

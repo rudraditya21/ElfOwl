@@ -1,9 +1,10 @@
 // ANCHOR: Unit tests for rule engine condition evaluation - Phase 3.4 Week 3
-// Tests rule matching against enriched events with various conditions
+// Tests rule matching and engine initialization with various configurations
 
 package rules
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -63,6 +64,120 @@ func TestNewEngine(t *testing.T) {
 			}
 
 			// Verify we got rules (either from file or hardcoded fallback)
+			if len(engine.Rules) == 0 {
+				t.Errorf("engine has no rules loaded")
+				return
+			}
+
+			// Verify rules have required fields
+			for i, rule := range engine.Rules {
+				if rule.ControlID == "" {
+					t.Errorf("rule %d has empty ControlID", i)
+				}
+				if rule.Title == "" {
+					t.Errorf("rule %d has empty Title", i)
+				}
+			}
+		})
+	}
+}
+
+// TestNewEngineWithConfig tests advanced engine initialization with EngineConfig
+// ANCHOR: Advanced engine configuration tests - Phase 3.2 Week 3
+// Tests file-only, ConfigMap-only, and fallback configurations
+func TestNewEngineWithConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		config         *EngineConfig
+		shouldFail     bool
+		expectFallback bool // true if should fall back to hardcoded rules
+		expectedError  string
+	}{
+		{
+			name: "No configuration provided (all defaults)",
+			config: &EngineConfig{
+				RuleFilePath:      "",
+				ConfigMapName:     "",
+				ConfigMapNamespace: "",
+				K8sClientset:      nil,
+			},
+			shouldFail:     false,
+			expectFallback: true, // Should use hardcoded rules
+		},
+		{
+			name: "Non-existent file with no ConfigMap fallback",
+			config: &EngineConfig{
+				RuleFilePath:      "/tmp/non-existent-rules.yaml",
+				ConfigMapName:     "",
+				ConfigMapNamespace: "",
+				K8sClientset:      nil,
+			},
+			shouldFail:     false,
+			expectFallback: true, // Should fall back to hardcoded rules
+		},
+		{
+			name: "Nil config provided",
+			config: nil,
+			shouldFail: true,
+			expectedError: "cannot be nil",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Handle nil config case - should now return error instead of panicking
+			if tt.config == nil {
+				engine, err := NewEngineWithConfig(tt.config)
+
+				if tt.shouldFail {
+					if err == nil {
+						t.Errorf("expected error for nil config, got nil")
+						return
+					}
+					if !containsSubstring(err.Error(), tt.expectedError) {
+						t.Errorf("expected error containing %q, got %q", tt.expectedError, err.Error())
+					}
+					if engine != nil {
+						t.Errorf("expected nil engine when config is nil, got %v", engine)
+					}
+				} else {
+					if err != nil {
+						t.Errorf("unexpected error: %v", err)
+					}
+				}
+				return
+			}
+
+			// Ensure context is set if testing with real clientset
+			if tt.config.K8sClientset != nil && tt.config.Ctx == nil {
+				tt.config.Ctx = context.Background()
+			}
+
+			engine, err := NewEngineWithConfig(tt.config)
+
+			if tt.shouldFail {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				} else if tt.expectedError != "" {
+					// Just verify error occurred for nil config
+					if err == nil {
+						t.Errorf("expected error containing %q, got nil", tt.expectedError)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if engine == nil {
+				t.Errorf("engine is nil")
+				return
+			}
+
+			// Verify we got rules (either from file, ConfigMap, or hardcoded fallback)
 			if len(engine.Rules) == 0 {
 				t.Errorf("engine has no rules loaded")
 				return
