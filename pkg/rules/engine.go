@@ -49,14 +49,37 @@ type Violation struct {
 	RemediationRef string
 }
 
-// NewEngine creates a new rule engine
-// ANCHOR: Rule engine initialization without config dependency - Dec 26, 2025
-// Removed config parameter to break circular import dependency
-func NewEngine() (*Engine, error) {
+// NewEngine creates a new rule engine with fallback rule loading
+// ANCHOR: Flexible rule engine initialization with fallback chain - Phase 3.3 Week 3
+// Attempts to load rules from optional file path, falls back to hardcoded rules
+// Fallback chain: file (if provided) → hardcoded CISControls
+func NewEngine(ruleFilePath ...string) (*Engine, error) {
 	logger, _ := zap.NewProduction()
 
+	var rules []*Rule
+
+	// Attempt to load rules from file if provided
+	if len(ruleFilePath) > 0 && ruleFilePath[0] != "" {
+		loadedRules, err := LoadRulesFromFile(ruleFilePath[0])
+		if err != nil {
+			logger.Warn("failed to load rules from file, using hardcoded rules",
+				zap.String("file", ruleFilePath[0]),
+				zap.Error(err))
+			// Fall back to hardcoded rules
+			rules = loadCISRules()
+		} else {
+			logger.Info("successfully loaded rules from file",
+				zap.String("file", ruleFilePath[0]),
+				zap.Int("rule_count", len(loadedRules)))
+			rules = loadedRules
+		}
+	} else {
+		// No file provided, use hardcoded rules
+		rules = loadCISRules()
+	}
+
 	engine := &Engine{
-		Rules:  loadCISRules(),
+		Rules:  rules,
 		Logger: logger,
 	}
 

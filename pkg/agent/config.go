@@ -64,7 +64,10 @@ type KubernetesConfig struct {
 }
 
 // RulesConfig defines rule engine settings
+// ANCHOR: Rule loading configuration - Phase 3.1 Week 3
+// Supports loading rules from file, ConfigMap, or hardcoded defaults
 type RulesConfig struct {
+	FilePath string `yaml:"file_path"` // Path to YAML rules file (e.g., /etc/elf-owl/rules.yaml)
 	ConfigMap struct {
 		Name      string `yaml:"name"`
 		Namespace string `yaml:"namespace"`

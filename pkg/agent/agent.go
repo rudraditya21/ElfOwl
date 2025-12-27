@@ -155,13 +155,21 @@ func NewAgent(config *Config) (*Agent, error) {
 	agent.K8sClient = k8sClient
 	agent.Logger.Info("kubernetes client initialized")
 
-	// Initialize rule engine
-	ruleEngine, err := rules.NewEngine()
+	// Initialize rule engine with optional rule file path
+	// ANCHOR: Rule engine initialization with configurable rule source - Phase 3.1 Week 3
+	// Supports loading rules from YAML file, ConfigMap, or hardcoded defaults
+	// Fallback chain: file (if configured) → ConfigMap (if configured) → hardcoded CISControls
+	ruleEngine, err := rules.NewEngine(config.Agent.Rules.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rule engine: %w", err)
 	}
 	agent.RuleEngine = ruleEngine
-	agent.Logger.Info("rule engine initialized")
+	if config.Agent.Rules.FilePath != "" {
+		agent.Logger.Info("rule engine initialized with file",
+			zap.String("file", config.Agent.Rules.FilePath))
+	} else {
+		agent.Logger.Info("rule engine initialized with default hardcoded rules")
+	}
 
 	// Initialize enricher
 	enricher, err := enrichment.NewEnricher(agent.K8sClient, config.Agent.ClusterID, config.Agent.NodeName)

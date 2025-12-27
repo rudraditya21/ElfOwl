@@ -1,0 +1,555 @@
+# ANCHOR: CIS Kubernetes v1.8 automated controls - Phase 3.1 Week 3
+# 48 automated compliance controls for Kubernetes pod security
+# Generated from pkg/rules/cis_mappings.go for easy configuration management
+
+---
+# ===== POD SECURITY CONTEXT CONTROLS =====
+
+# CIS 4.5.1: Minimize the admission of privileged containers
+- controlID: CIS_4.5.1
+  title: Minimize the admission of privileged containers
+  severity: CRITICAL
+  eventTypes:
+    - process_execution
+    - pod_spec_check
+  conditions:
+    - field: container.security_context.privileged
+      operator: equals
+      value: true
+
+# CIS 4.5.2: Ensure containers do not run as root
+- controlID: CIS_4.5.2
+  title: Ensure containers do not run as root
+  severity: HIGH
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: process.uid
+      operator: equals
+      value: 0
+    - field: kubernetes.pod_uid
+      operator: not_equals
+      value: ""
+
+# CIS 4.5.3: Minimize Linux Kernel Capability usage
+- controlID: CIS_4.5.3
+  title: Minimize Linux Kernel Capability usage
+  severity: HIGH
+  eventTypes:
+    - capability_usage
+  conditions:
+    - field: capability.name
+      operator: in
+      value:
+        - NET_ADMIN
+        - SYS_ADMIN
+        - SYS_MODULE
+        - SYS_PTRACE
+        - SYS_BOOT
+        - MAC_ADMIN
+
+# CIS 4.5.5: Ensure the filesystem is read-only where possible
+- controlID: CIS_4.5.5
+  title: Ensure the filesystem is read-only where possible
+  severity: MEDIUM
+  eventTypes:
+    - file_write
+  conditions:
+    - field: file.path
+      operator: in
+      value:
+        - /
+        - /bin
+        - /sbin
+        - /usr/bin
+        - /usr/sbin
+        - /etc
+        - /lib
+        - /usr/lib
+
+# CIS 4.1.1: Ensure ServiceAccount admission controller is enabled
+- controlID: CIS_4.1.1
+  title: Ensure ServiceAccount admission controller is enabled
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.service_account
+      operator: equals
+      value: "default"
+
+# CIS 4.6.1: Ensure default deny NetworkPolicy is in place
+- controlID: CIS_4.6.1
+  title: Ensure default deny NetworkPolicy is in place
+  severity: HIGH
+  eventTypes:
+    - network_policy_check
+  conditions:
+    - field: kubernetes.has_default_deny_policy
+      operator: not_equals
+      value: true
+
+# CIS 4.2.1: Ensure runAsNonRoot enforcement
+- controlID: CIS_4.2.1
+  title: Ensure containers run as non-root user
+  severity: HIGH
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.run_as_root
+      operator: equals
+      value: true
+
+# CIS 4.2.2: Minimize allowPrivilegeEscalation
+- controlID: CIS_4.2.2
+  title: Minimize allowPrivilegeEscalation
+  severity: HIGH
+  eventTypes:
+    - process_execution
+    - capability_usage
+  conditions:
+    - field: container.allow_privilege_escalation
+      operator: equals
+      value: true
+
+# CIS 4.2.3: Ensure hostNetwork is disabled
+- controlID: CIS_4.2.3
+  title: Ensure hostNetwork is disabled
+  severity: HIGH
+  eventTypes:
+    - network_connection
+  conditions:
+    - field: container.host_network
+      operator: equals
+      value: true
+
+# CIS 4.2.4: Ensure hostIPC is disabled
+- controlID: CIS_4.2.4
+  title: Ensure hostIPC is disabled
+  severity: HIGH
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.host_ipc
+      operator: equals
+      value: true
+
+# CIS 4.2.5: Ensure hostPID is disabled
+- controlID: CIS_4.2.5
+  title: Ensure hostPID is disabled
+  severity: HIGH
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.host_pid
+      operator: equals
+      value: true
+
+# CIS 4.2.6: Ensure restrictive capabilities
+- controlID: CIS_4.2.6
+  title: Ensure containers do not have dangerous capabilities
+  severity: HIGH
+  eventTypes:
+    - capability_usage
+  conditions:
+    - field: capability.name
+      operator: in
+      value:
+        - NET_ADMIN
+        - NET_RAW
+        - SYS_ADMIN
+        - SYS_MODULE
+        - SYS_PTRACE
+        - SYS_BOOT
+        - MAC_ADMIN
+        - MAC_OVERRIDE
+        - DAC_OVERRIDE
+        - DAC_READ_SEARCH
+        - SETFCAP
+
+# CIS 4.2.7: Ensure seccomp enforcement
+- controlID: CIS_4.2.7
+  title: Ensure seccomp profile enforcement
+  severity: MEDIUM
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.seccomp_profile
+      operator: equals
+      value: unconfined
+
+# CIS 4.2.8: Ensure AppArmor enforcement
+- controlID: CIS_4.2.8
+  title: Ensure AppArmor profile enforcement
+  severity: MEDIUM
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.apparmor_profile
+      operator: equals
+      value: unconfined
+
+# ===== CONTAINER IMAGE & REGISTRY CONTROLS =====
+
+# CIS 4.3.1: Ensure images from known registry
+- controlID: CIS_4.3.1
+  title: Ensure container images are from known registries
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.image_registry
+      operator: not_equals
+      value: "docker.io"
+
+# CIS 4.3.2: Ensure images without 'latest' tag
+- controlID: CIS_4.3.2
+  title: Ensure container images do not use 'latest' tag
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.image_tag
+      operator: equals
+      value: "latest"
+
+# CIS 4.3.3: Ensure image pull policy is Always
+- controlID: CIS_4.3.3
+  title: Ensure image pull policy is Always
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.image_pull_policy
+      operator: not_equals
+      value: "Always"
+
+# CIS 4.3.4: Minimize admission of images with unknown vulnerabilities
+- controlID: CIS_4.3.4
+  title: Ensure images are scanned for vulnerabilities
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.image_scan_status
+      operator: not_equals
+      value: "scanned"
+
+# CIS 4.3.5: Ensure image registry access control
+- controlID: CIS_4.3.5
+  title: Ensure image registry authentication is required
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.image_registry_auth
+      operator: equals
+      value: false
+
+# CIS 4.3.6: Ensure image signature verification
+- controlID: CIS_4.3.6
+  title: Ensure image signature verification is enforced
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.image_signed
+      operator: equals
+      value: false
+
+# ===== RESOURCE MANAGEMENT CONTROLS =====
+
+# CIS 4.4.1: Ensure memory limit is set
+- controlID: CIS_4.4.1
+  title: Ensure container memory limit is set
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.memory_limit
+      operator: equals
+      value: ""
+
+# CIS 4.4.2: Ensure CPU limit is set
+- controlID: CIS_4.4.2
+  title: Ensure container CPU limit is set
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.cpu_limit
+      operator: equals
+      value: ""
+
+# CIS 4.4.3: Ensure memory request is set
+- controlID: CIS_4.4.3
+  title: Ensure container memory request is set
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.memory_request
+      operator: equals
+      value: ""
+
+# CIS 4.4.4: Ensure CPU request is set
+- controlID: CIS_4.4.4
+  title: Ensure container CPU request is set
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.cpu_request
+      operator: equals
+      value: ""
+
+# CIS 4.4.5: Ensure storage request is set
+- controlID: CIS_4.4.5
+  title: Ensure container storage request is set
+  severity: LOW
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.storage_request
+      operator: equals
+      value: ""
+
+# ===== NETWORK POLICY CONTROLS =====
+
+# CIS 4.6.2: Ensure ingress traffic is restricted
+- controlID: CIS_4.6.2
+  title: Ensure ingress traffic is restricted
+  severity: HIGH
+  eventTypes:
+    - network_connection
+  conditions:
+    - field: network.ingress_restricted
+      operator: equals
+      value: false
+
+# CIS 4.6.3: Ensure egress traffic is restricted
+- controlID: CIS_4.6.3
+  title: Ensure egress traffic is restricted
+  severity: HIGH
+  eventTypes:
+    - network_connection
+  conditions:
+    - field: network.egress_restricted
+      operator: equals
+      value: false
+
+# CIS 4.6.4: Ensure DNS queries are restricted
+- controlID: CIS_4.6.4
+  title: Ensure DNS queries are restricted to allowed domains
+  severity: MEDIUM
+  eventTypes:
+    - dns_query
+  conditions:
+    - field: dns.query_allowed
+      operator: equals
+      value: false
+
+# CIS 4.6.5: Ensure network segmentation is enforced
+- controlID: CIS_4.6.5
+  title: Ensure network segmentation is enforced
+  severity: HIGH
+  eventTypes:
+    - network_connection
+  conditions:
+    - field: network.namespace_isolation
+      operator: equals
+      value: false
+
+# ===== RBAC & ACCESS CONTROLS =====
+
+# CIS 5.1.1: Cluster admin RBAC enforcement
+- controlID: CIS_5.1.1
+  title: Ensure cluster admin RBAC is enforced
+  severity: CRITICAL
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.rbac_enforced
+      operator: equals
+      value: false
+
+# CIS 5.1.2: Minimal RBAC access
+- controlID: CIS_5.1.2
+  title: Ensure minimal RBAC access is granted
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.rbac_level
+      operator: greater_than
+      value: 2
+
+# CIS 5.2.1: Minimal ServiceAccount usage
+- controlID: CIS_5.2.1
+  title: Ensure ServiceAccount token is not auto-mounted
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.automount_service_account_token
+      operator: equals
+      value: true
+
+# CIS 5.2.2: Service account token validity
+- controlID: CIS_5.2.2
+  title: Ensure ServiceAccount token is refreshed regularly
+  severity: MEDIUM
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.service_account_token_age
+      operator: greater_than
+      value: 2592000 # 30 days in seconds
+
+# CIS 5.3.1: Default ServiceAccount usage
+- controlID: CIS_5.3.1
+  title: Ensure default ServiceAccount is not used
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.service_account
+      operator: equals
+      value: "default"
+
+# CIS 5.3.2: Service account permissions
+- controlID: CIS_5.3.2
+  title: Ensure service account permissions are minimal
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.service_account_permissions
+      operator: greater_than
+      value: 5
+
+# CIS 5.4.1: Role-based access control
+- controlID: CIS_5.4.1
+  title: Ensure RBAC policies are defined for critical operations
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.rbac_policy_defined
+      operator: equals
+      value: false
+
+# CIS 5.4.2: Role granularity
+- controlID: CIS_5.4.2
+  title: Ensure roles have minimal permissions
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.role_permission_count
+      operator: greater_than
+      value: 10
+
+# CIS 5.5.1: Audit logging for RBAC
+- controlID: CIS_5.5.1
+  title: Ensure audit logging is enabled for RBAC changes
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: kubernetes.audit_logging_enabled
+      operator: equals
+      value: false
+
+# ===== ADVANCED SECURITY CONTEXT CONTROLS =====
+
+# CIS 4.7.1: Enforce seccomp profiles
+- controlID: CIS_4.7.1
+  title: Ensure seccomp profiles are enforced
+  severity: MEDIUM
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.seccomp_profile
+      operator: equals
+      value: unconfined
+
+# CIS 4.7.2: Enforce AppArmor profiles
+- controlID: CIS_4.7.2
+  title: Ensure AppArmor profiles are enforced
+  severity: MEDIUM
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.apparmor_profile
+      operator: equals
+      value: unconfined
+
+# CIS 4.7.3: SELinux context enforcement
+- controlID: CIS_4.7.3
+  title: Ensure SELinux context enforcement
+  severity: MEDIUM
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.selinux_level
+      operator: equals
+      value: unrestricted
+
+# CIS 4.8.1: Enforce read-only root filesystem
+- controlID: CIS_4.8.1
+  title: Ensure container filesystem is read-only
+  severity: HIGH
+  eventTypes:
+    - file_write
+  conditions:
+    - field: container.read_only_filesystem
+      operator: equals
+      value: false
+
+# CIS 4.8.2: Restrict volume mounts
+- controlID: CIS_4.8.2
+  title: Ensure sensitive volume types are restricted
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.volume_type
+      operator: in
+      value:
+        - hostPath
+        - emptyDir
+        - local
+
+# CIS 4.9.1: Container runtime security
+- controlID: CIS_4.9.1
+  title: Ensure container runtime is from official sources
+  severity: HIGH
+  eventTypes:
+    - pod_spec_check
+  conditions:
+    - field: container.runtime
+      operator: not_equals
+      value: "docker"
+
+# CIS 4.9.2: Container isolation enforcement
+- controlID: CIS_4.9.2
+  title: Ensure container isolation is properly configured
+  severity: HIGH
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.isolation_level
+      operator: less_than
+      value: 2
+
+# CIS 4.9.3: Kernel hardening enforcement
+- controlID: CIS_4.9.3
+  title: Ensure kernel hardening measures are in place
+  severity: MEDIUM
+  eventTypes:
+    - process_execution
+  conditions:
+    - field: container.kernel_hardening
+      operator: equals
+      value: false
