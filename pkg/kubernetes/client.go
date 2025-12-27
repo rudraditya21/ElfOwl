@@ -475,6 +475,121 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	return totalPermissions
 }
 
+// GetNetworkPolicyStatus checks if network policies restrict ingress/egress for a pod
+// ANCHOR: Network policy evaluation for pod traffic restriction - Phase 2.4, Dec 26, 2025
+// Checks if NetworkPolicy objects restrict traffic to/from the pod
+func (c *Client) GetNetworkPolicyStatus(ctx context.Context, namespace, podName string, labels map[string]string) *NetworkPolicyStatus {
+	if namespace == "" {
+		return &NetworkPolicyStatus{
+			IngressRestricted:  false,
+			EgressRestricted:   false,
+			NamespaceIsolation: false,
+		}
+	}
+
+	status := &NetworkPolicyStatus{
+		IngressRestricted:  false,
+		EgressRestricted:   false,
+		NamespaceIsolation: false,
+	}
+
+	// Query all NetworkPolicies in the namespace
+	netpols, err := c.clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil || netpols == nil {
+		// No policies found or error - assume no restriction
+		return status
+	}
+
+	ingressPolicies := 0
+	egressPolicies := 0
+	defaultDenyIngress := false
+	defaultDenyEgress := false
+
+	for _, netpol := range netpols.Items {
+		// Check if this policy applies to this pod
+		// A policy applies if the pod's labels match the selector
+		selector := netpol.Spec.PodSelector
+		if selectorMatches(labels, selector) {
+			// Check policy types to see what it restricts
+			for _, policyType := range netpol.Spec.PolicyTypes {
+				if policyType == "Ingress" {
+					ingressPolicies++
+					// If it has no ingress rules, it's a default deny ingress
+					if len(netpol.Spec.Ingress) == 0 {
+						defaultDenyIngress = true
+					}
+				}
+				if policyType == "Egress" {
+					egressPolicies++
+					// If it has no egress rules, it's a default deny egress
+					if len(netpol.Spec.Egress) == 0 {
+						defaultDenyEgress = true
+					}
+				}
+			}
+		}
+	}
+
+	// Pod traffic is restricted if there are policies or default deny rules
+	status.IngressRestricted = ingressPolicies > 0 || defaultDenyIngress
+	status.EgressRestricted = egressPolicies > 0 || defaultDenyEgress
+
+	// Check for default-deny NetworkPolicy in the namespace (namespace-wide isolation)
+	for _, netpol := range netpols.Items {
+		// Default deny policy has empty pod selector (applies to all pods in namespace)
+		if netpol.Spec.PodSelector.Size() == 0 {
+			// This is a default deny policy - namespace isolation is enabled
+			status.NamespaceIsolation = true
+			break
+		}
+	}
+
+	return status
+}
+
+// selectorMatches checks if pod labels match a label selector
+// ANCHOR: Label selector matching for NetworkPolicy evaluation - Phase 2.4, Dec 26, 2025
+// Returns true if pod labels match all requirements in the selector
+func selectorMatches(labels map[string]string, selector metav1.LabelSelector) bool {
+	if labels == nil {
+		return selector.Size() == 0
+	}
+
+	// Check label-based requirements
+	for key, value := range selector.MatchLabels {
+		if labels[key] != value {
+			return false
+		}
+	}
+
+	// For now, we don't evaluate MatchExpressions (complex logic)
+	// This is a simplified implementation that handles the common case
+	return true
+}
+
+// CheckNamespaceDefaultDenyPolicy checks if namespace has default deny NetworkPolicies
+// ANCHOR: Namespace isolation policy check - Phase 2.4, Dec 26, 2025
+// Returns true if the namespace has a default deny network policy
+func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace string) bool {
+	if namespace == "" {
+		return false
+	}
+
+	netpols, err := c.clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil || netpols == nil {
+		return false
+	}
+
+	for _, netpol := range netpols.Items {
+		// Check if this is a default deny policy (empty pod selector)
+		if netpol.Spec.PodSelector.Size() == 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Data structures for Kubernetes metadata
 // ANCHOR: PodMetadata and NodeMetadata types used by enrichment - Phase 2.2, Dec 26, 2025
 // These types are defined in the kubernetes package to avoid circular imports.
@@ -543,4 +658,13 @@ type ServiceAccountMetadata struct {
 	Namespace                    string
 	AutomountServiceAccountToken bool
 	TokenCreatedAt               int64 // Unix timestamp
+}
+
+// NetworkPolicyStatus contains network policy restrictions for a pod
+// ANCHOR: Network policy status for traffic restriction evaluation - Phase 2.4, Dec 26, 2025
+// Evaluated from NetworkPolicy objects that apply to the pod
+type NetworkPolicyStatus struct {
+	IngressRestricted  bool // True if NetworkPolicy restricts ingress traffic
+	EgressRestricted   bool // True if NetworkPolicy restricts egress traffic
+	NamespaceIsolation bool // True if namespace has default deny policies
 }

@@ -278,18 +278,31 @@ func (e *Enricher) EnrichNetworkEvent(
 		k8sCtx.Labels = podMeta.Labels
 	}
 
-	// Build network context with policy defaults
-	// ANCHOR: Network policy defaults for Phase 2 - Dec 26, 2025
-	// Assumes no network policies in place by default; Phase 3 will query actual policies
+	// Build network context with policy evaluation
+	// ANCHOR: Network policy evaluation from K8s API - Phase 2.4, Dec 26, 2025
+	// Query NetworkPolicy objects to determine traffic restrictions
 	networkCtx := &NetworkContext{
 		SourceIP:             gobpfEvent.SrcAddr,
 		DestinationIP:        gobpfEvent.DstAddr,
 		SourcePort:           gobpfEvent.SrcPort,
 		DestinationPort:      gobpfEvent.DstPort,
 		Protocol:             gobpfEvent.Protocol.String(),
-		IngressRestricted:    false, // Assume no ingress policies by default
-		EgressRestricted:     false, // Assume no egress policies by default
-		NamespaceIsolation:   false, // Assume no isolation by default
+		IngressRestricted:    false,
+		EgressRestricted:     false,
+		NamespaceIsolation:   false,
+	}
+
+	// Query network policies if pod metadata is available
+	if podMeta != nil && e.K8sClient != nil {
+		npStatus := e.K8sClient.GetNetworkPolicyStatus(ctx, podMeta.Namespace, podMeta.Name, podMeta.Labels)
+		if npStatus != nil {
+			networkCtx.IngressRestricted = npStatus.IngressRestricted
+			networkCtx.EgressRestricted = npStatus.EgressRestricted
+			networkCtx.NamespaceIsolation = npStatus.NamespaceIsolation
+		}
+	} else if k8sCtx.Namespace != "" && e.K8sClient != nil {
+		// Fallback: check namespace-wide default deny if we know the namespace
+		networkCtx.NamespaceIsolation = e.K8sClient.CheckNamespaceDefaultDenyPolicy(ctx, k8sCtx.Namespace)
 	}
 
 	return &EnrichedEvent{
