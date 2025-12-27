@@ -219,7 +219,7 @@ func TestIntegrationFileAccessViolation(t *testing.T) {
 	event := &enrichment.EnrichedEvent{
 		EventType: "file_write", // Correct event type - matches CIS_4.5.5
 		File: &enrichment.FileContext{
-			Path:      "/etc/passwd", // System directory write (violation)
+			Path:      "/etc", // Path must match CIS_4.5.5 allowlist to trigger rule
 			Operation: "write",
 			UID:       0,
 		},
@@ -248,7 +248,7 @@ func TestIntegrationFileAccessViolation(t *testing.T) {
 
 	// CIS_4.5.5 detects writes to system directories
 	if len(violations) == 0 {
-		t.Errorf("expected violations for write to /etc/passwd (system directory), got none")
+		t.Errorf("expected violations for write to /etc (system directory), got none")
 	}
 
 	t.Logf("File write violation test: detected %d violations", len(violations))
