@@ -270,31 +270,31 @@ func DefaultConfig() *Config {
 				Output: "stdout",
 			},
 			// ANCHOR: eBPF Configuration Defaults - Phase 3: Migration Complete - Dec 27, 2025
-			// Now enabled by default (goBPF has been completely removed)
+			// Now enabled by default with all monitors active (goBPF has been completely removed)
 			EBPF: EBPFConfig{
-				Enabled: false,
+				Enabled: true,
 				Process: EBPFMonitorConfig{
-					Enabled:    false,
+					Enabled:    true,
 					BufferSize: 8192,
 					Timeout:    5 * time.Second,
 				},
 				Network: EBPFMonitorConfig{
-					Enabled:    false,
+					Enabled:    true,
 					BufferSize: 8192,
 					Timeout:    5 * time.Second,
 				},
 				DNS: EBPFMonitorConfig{
-					Enabled:    false,
+					Enabled:    true,
 					BufferSize: 4096,
 					Timeout:    5 * time.Second,
 				},
 				File: EBPFMonitorConfig{
-					Enabled:    false,
+					Enabled:    true,
 					BufferSize: 8192,
 					Timeout:    5 * time.Second,
 				},
 				Capability: EBPFMonitorConfig{
-					Enabled:    false,
+					Enabled:    true,
 					BufferSize: 4096,
 					Timeout:    5 * time.Second,
 				},

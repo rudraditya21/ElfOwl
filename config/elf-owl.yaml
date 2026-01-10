@@ -12,20 +12,36 @@ agent:
     format: "json"
     output: "stdout"
 
-  # goBPF Security Monitors
-  gobpf:
+  # cilium/ebpf Security Monitors (Phase 3: goBPF migration complete)
+  ebpf:
+    enabled: true  # Master switch - must be true to enable any monitors
     process:
       enabled: true
+      buffer_size: 8192
+      timeout: 5s
     network:
       enabled: true
+      buffer_size: 8192
+      timeout: 5s
     dns:
       enabled: true
+      buffer_size: 4096
+      timeout: 5s
     file:
       enabled: true
+      buffer_size: 8192
+      timeout: 5s
     capability:
       enabled: true
-    syscall:
-      enabled: false  # High overhead - disabled by default
+      buffer_size: 4096
+      timeout: 5s
+    perf_buffer:
+      enabled: true
+      page_count: 64
+      lost_handler: true
+    ring_buffer:
+      enabled: false  # Use perf buffer by default (better compatibility)
+      size: 65536
 
   # Kubernetes integration
   kubernetes:
