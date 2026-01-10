@@ -25,6 +25,7 @@ type AgentConfig struct {
 	NodeName  string          `yaml:"node_name"`
 	Logging   LoggingConfig   `yaml:"logging"`
 	GoBPF     GoBPFConfig     `yaml:"gobpf"`
+	EBPF      EBPFConfig      `yaml:"ebpf"`
 	Kubernetes KubernetesConfig `yaml:"kubernetes"`
 	Rules     RulesConfig     `yaml:"rules"`
 	Enrichment EnrichmentConfig `yaml:"enrichment"`
@@ -54,6 +55,40 @@ type GoBPFConfig struct {
 // GoBPFMonitorConfig defines individual monitor settings
 type GoBPFMonitorConfig struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+// ANCHOR: eBPF Configuration - Phase 1: Library Setup - Dec 27, 2025
+// Defines Cilium/eBPF monitor settings (new in Phase 1, replaces GoBPF in Phase 3)
+// Maintains backward compatibility during migration: both can run simultaneously
+type EBPFConfig struct {
+	Enabled     bool               `yaml:"enabled"`
+	Process     EBPFMonitorConfig  `yaml:"process"`
+	Network     EBPFMonitorConfig  `yaml:"network"`
+	DNS         EBPFMonitorConfig  `yaml:"dns"`
+	File        EBPFMonitorConfig  `yaml:"file"`
+	Capability  EBPFMonitorConfig  `yaml:"capability"`
+	PerfBuffer  PerfBufferConfig   `yaml:"perf_buffer"`
+	RingBuffer  RingBufferConfig   `yaml:"ring_buffer"`
+}
+
+// EBPFMonitorConfig defines individual Cilium/eBPF monitor settings
+type EBPFMonitorConfig struct {
+	Enabled    bool          `yaml:"enabled"`
+	BufferSize int           `yaml:"buffer_size"`
+	Timeout    time.Duration `yaml:"timeout"`
+}
+
+// PerfBufferConfig defines perf buffer settings for event streaming
+type PerfBufferConfig struct {
+	Enabled     bool `yaml:"enabled"`
+	PageCount   int  `yaml:"page_count"`
+	LostHandler bool `yaml:"lost_handler"`
+}
+
+// RingBufferConfig defines ring buffer settings (preferred for newer kernels)
+type RingBufferConfig struct {
+	Enabled bool `yaml:"enabled"`
+	Size    int  `yaml:"size"`
 }
 
 // KubernetesConfig defines Kubernetes integration settings
@@ -256,6 +291,45 @@ func DefaultConfig() *Config {
 				File:    GoBPFMonitorConfig{Enabled: true},
 				Capability: GoBPFMonitorConfig{Enabled: true},
 				Syscall: GoBPFMonitorConfig{Enabled: false},
+			},
+			// ANCHOR: eBPF Configuration Defaults - Phase 1: Library Setup - Dec 27, 2025
+			// Disabled by default (Phase 2-3 will enable migration). Both can coexist during migration.
+			EBPF: EBPFConfig{
+				Enabled: false,
+				Process: EBPFMonitorConfig{
+					Enabled:    false,
+					BufferSize: 8192,
+					Timeout:    5 * time.Second,
+				},
+				Network: EBPFMonitorConfig{
+					Enabled:    false,
+					BufferSize: 8192,
+					Timeout:    5 * time.Second,
+				},
+				DNS: EBPFMonitorConfig{
+					Enabled:    false,
+					BufferSize: 4096,
+					Timeout:    5 * time.Second,
+				},
+				File: EBPFMonitorConfig{
+					Enabled:    false,
+					BufferSize: 8192,
+					Timeout:    5 * time.Second,
+				},
+				Capability: EBPFMonitorConfig{
+					Enabled:    false,
+					BufferSize: 4096,
+					Timeout:    5 * time.Second,
+				},
+				PerfBuffer: PerfBufferConfig{
+					Enabled:     true,
+					PageCount:   64,
+					LostHandler: true,
+				},
+				RingBuffer: RingBufferConfig{
+					Enabled: false,
+					Size:    65536,
+				},
 			},
 			Kubernetes: KubernetesConfig{
 				InCluster:        true,
