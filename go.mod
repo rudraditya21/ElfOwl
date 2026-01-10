@@ -4,14 +4,15 @@ go 1.19
 
 require (
 
-	// eBPF monitoring via Cilium (new) and goBPF (transitional)
-	github.com/cilium/ebpf v0.11.0 // indirect
+	// eBPF monitoring via Cilium/ebpf (production-grade, maintained)
+	// Phase 3: Removed goBPF dependency (Dec 27, 2025)
+	github.com/cilium/ebpf v0.11.0
+
 	// HTTP client for Owl API
 	github.com/go-resty/resty/v2 v2.11.0
 
 	// Metrics
 	github.com/prometheus/client_golang v1.18.0
-	github.com/udyansh/gobpf v0.1.0
 
 	// Logging
 	go.uber.org/zap v1.27.0
@@ -83,6 +84,3 @@ replace golang.org/x/sys => golang.org/x/sys v0.13.0
 
 // Use golang.org/x/term v0.13.0 for Go 1.19 compatibility
 replace golang.org/x/term => golang.org/x/term v0.13.0
-
-// Temporary: goBPF will be removed after Phase 3 (monitor migration complete)
-replace github.com/udyansh/gobpf => ../gobpf

@@ -1,6 +1,7 @@
 // ANCHOR: Core agent orchestrator - Dec 26, 2025
-// Main coordinator that directly uses goBPF security monitors
-// Orchestrates event pipeline: goBPF → enrichment → rules → evidence → push
+// Main coordinator that uses cilium/ebpf security monitors
+// Migrated from goBPF to cilium/ebpf - Dec 27, 2025
+// Orchestrates event pipeline: cilium/ebpf → enrichment → rules → evidence → push
 
 package agent
 
@@ -13,8 +14,9 @@ import (
 
 	"go.uber.org/zap"
 
-	// Direct goBPF imports (no wrapper layer)
-	gobpfsecurity "github.com/udyansh/gobpf/security"
+	// ANCHOR: cilium/ebpf monitors for production-grade eBPF support - Dec 27, 2025
+	// Provides better performance, maintenance, and ecosystem integration than goBPF
+	"github.com/udyansh/elf-owl/pkg/ebpf"
 
 	"github.com/udyansh/elf-owl/pkg/api"
 	"github.com/udyansh/elf-owl/pkg/enrichment"
@@ -30,12 +32,12 @@ type Agent struct {
 	Config *Config
 	Logger *zap.Logger
 
-	// ===== goBPF Security Monitors (Direct Import) =====
-	ProcessMonitor    *gobpfsecurity.ProcessMonitor
-	NetworkMonitor    *gobpfsecurity.NetworkMonitor
-	// DNSMonitor - Not yet available in goBPF security package, commented for Week 2
-	FileMonitor       *gobpfsecurity.FileMonitor
-	CapabilityMonitor *gobpfsecurity.CapabilityMonitor
+	// ===== cilium/ebpf Security Monitors (Phase 3 Migration) =====
+	ProcessMonitor    *ebpf.ProcessMonitor
+	NetworkMonitor    *ebpf.NetworkMonitor
+	DNSMonitor        *ebpf.DNSMonitor
+	FileMonitor       *ebpf.FileMonitor
+	CapabilityMonitor *ebpf.CapabilityMonitor
 
 	// ===== Owl-Specific Components =====
 	K8sClient   *kubernetes.Client
@@ -91,60 +93,38 @@ func NewAgent(config *Config) (*Agent, error) {
 		startTime:       time.Now(),
 	}
 
-	// Initialize goBPF monitors if enabled
-	if config.Agent.GoBPF.Process.Enabled {
-		opts := gobpfsecurity.DefaultProcessMonitorOptions()
-		processMonitor, err := gobpfsecurity.NewProcessMonitor(opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create process monitor: %w", err)
+	// ANCHOR: Initialize cilium/ebpf monitors if enabled - Dec 27, 2025
+	// Create monitor with nil ProgramSet (will be loaded by Start())
+	if config.Agent.EBPF.Enabled {
+		if config.Agent.EBPF.Process.Enabled {
+			processMonitor := ebpf.NewProcessMonitor(nil, agent.Logger)
+			agent.ProcessMonitor = processMonitor
+			agent.Logger.Info("process monitor initialized")
 		}
-		agent.ProcessMonitor = processMonitor
-		agent.Logger.Info("process monitor initialized")
-	}
 
-	if config.Agent.GoBPF.Network.Enabled {
-		opts := gobpfsecurity.DefaultNetworkMonitorOptions()
-		networkMonitor, err := gobpfsecurity.NewNetworkMonitor(opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create network monitor: %w", err)
+		if config.Agent.EBPF.Network.Enabled {
+			networkMonitor := ebpf.NewNetworkMonitor(nil, agent.Logger)
+			agent.NetworkMonitor = networkMonitor
+			agent.Logger.Info("network monitor initialized")
 		}
-		agent.NetworkMonitor = networkMonitor
-		agent.Logger.Info("network monitor initialized")
-	}
 
-	// ANCHOR: DNS monitor initialization skipped - Dec 26, 2025
-	// DNSMonitor not yet available in goBPF security package
-	// Will be enabled in Week 2 when goBPF integration is complete
-	/*
-	if config.Agent.GoBPF.DNS.Enabled {
-		opts := gobpfsecurity.DefaultDNSMonitorOptions()
-		dnsMonitor, err := gobpfsecurity.NewDNSMonitor(opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create DNS monitor: %w", err)
+		if config.Agent.EBPF.DNS.Enabled {
+			dnsMonitor := ebpf.NewDNSMonitor(nil, agent.Logger)
+			agent.DNSMonitor = dnsMonitor
+			agent.Logger.Info("DNS monitor initialized")
 		}
-		agent.DNSMonitor = dnsMonitor
-		agent.Logger.Info("DNS monitor initialized")
-	}
-	*/
 
-	if config.Agent.GoBPF.File.Enabled {
-		opts := gobpfsecurity.DefaultFileMonitorOptions()
-		fileMonitor, err := gobpfsecurity.NewFileMonitor(opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create file monitor: %w", err)
+		if config.Agent.EBPF.File.Enabled {
+			fileMonitor := ebpf.NewFileMonitor(nil, agent.Logger)
+			agent.FileMonitor = fileMonitor
+			agent.Logger.Info("file monitor initialized")
 		}
-		agent.FileMonitor = fileMonitor
-		agent.Logger.Info("file monitor initialized")
-	}
 
-	if config.Agent.GoBPF.Capability.Enabled {
-		opts := gobpfsecurity.DefaultCapabilityMonitorOptions()
-		capMonitor, err := gobpfsecurity.NewCapabilityMonitor(opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create capability monitor: %w", err)
+		if config.Agent.EBPF.Capability.Enabled {
+			capMonitor := ebpf.NewCapabilityMonitor(nil, agent.Logger)
+			agent.CapabilityMonitor = capMonitor
+			agent.Logger.Info("capability monitor initialized")
 		}
-		agent.CapabilityMonitor = capMonitor
-		agent.Logger.Info("capability monitor initialized")
 	}
 
 	// Initialize Kubernetes client
@@ -246,50 +226,47 @@ func (a *Agent) Start(ctx context.Context) error {
 		zap.String("nodeName", a.Config.Agent.NodeName),
 	)
 
-	// Start all goBPF monitors
+	// ANCHOR: Start all cilium/ebpf monitors with context - Dec 27, 2025
+	// Each monitor manages its own lifecycle via context cancellation
 	if a.ProcessMonitor != nil {
-		if err := a.ProcessMonitor.Start(); err != nil {
+		if err := a.ProcessMonitor.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start process monitor: %w", err)
 		}
 		a.Logger.Info("process monitor started")
 	}
 
 	if a.NetworkMonitor != nil {
-		if err := a.NetworkMonitor.Start(); err != nil {
+		if err := a.NetworkMonitor.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start network monitor: %w", err)
 		}
 		a.Logger.Info("network monitor started")
 	}
 
-	// ANCHOR: DNS monitor start skipped - Dec 26, 2025
-	// DNS monitor not available in goBPF security package
-	/*
 	if a.DNSMonitor != nil {
-		if err := a.DNSMonitor.Start(); err != nil {
+		if err := a.DNSMonitor.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start DNS monitor: %w", err)
 		}
 		a.Logger.Info("DNS monitor started")
 	}
-	*/
 
 	if a.FileMonitor != nil {
-		if err := a.FileMonitor.Start(); err != nil {
+		if err := a.FileMonitor.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start file monitor: %w", err)
 		}
 		a.Logger.Info("file monitor started")
 	}
 
 	if a.CapabilityMonitor != nil {
-		if err := a.CapabilityMonitor.Start(); err != nil {
+		if err := a.CapabilityMonitor.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start capability monitor: %w", err)
 		}
 		a.Logger.Info("capability monitor started")
 	}
 
-	// Launch event handlers for each goBPF monitor
+	// Launch event handlers for each cilium/ebpf monitor
 	go a.handleProcessEvents(ctx)
 	go a.handleNetworkEvents(ctx)
-	// go a.handleDNSEvents(ctx) // DNS monitor not available in goBPF yet
+	go a.handleDNSEvents(ctx)
 	go a.handleFileEvents(ctx)
 	go a.handleCapabilityEvents(ctx)
 
@@ -303,19 +280,17 @@ func (a *Agent) Start(ctx context.Context) error {
 	return nil
 }
 
-// handleProcessEvents handles goBPF process monitor events
+// handleProcessEvents handles cilium/ebpf process monitor events
 func (a *Agent) handleProcessEvents(ctx context.Context) {
 	if a.ProcessMonitor == nil {
 		return
 	}
 
+	eventChan := a.ProcessMonitor.EventChan()
 	for {
 		select {
-		case gobpfEvent := <-a.ProcessMonitor.Events():
-			// Enrich with K8s metadata
-			enrichedEvent, err := a.Enricher.EnrichProcessEvent(ctx, gobpfEvent)
-			if err != nil {
-				a.Logger.Debug("failed to enrich process event", zap.Error(err))
+		case enrichedEvent := <-eventChan:
+			if enrichedEvent == nil {
 				continue
 			}
 
@@ -340,27 +315,26 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
 
-		case err := <-a.ProcessMonitor.Errors():
-			a.Logger.Warn("process monitor error", zap.Error(err))
-
 		case <-a.done:
+			return
+
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// handleNetworkEvents handles goBPF network monitor events
+// handleNetworkEvents handles cilium/ebpf network monitor events
 func (a *Agent) handleNetworkEvents(ctx context.Context) {
 	if a.NetworkMonitor == nil {
 		return
 	}
 
+	eventChan := a.NetworkMonitor.EventChan()
 	for {
 		select {
-		case gobpfEvent := <-a.NetworkMonitor.Events():
-			enrichedEvent, err := a.Enricher.EnrichNetworkEvent(ctx, gobpfEvent)
-			if err != nil {
-				a.Logger.Debug("failed to enrich network event", zap.Error(err))
+		case enrichedEvent := <-eventChan:
+			if enrichedEvent == nil {
 				continue
 			}
 
@@ -376,63 +350,63 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
 
-		case err := <-a.NetworkMonitor.Errors():
-			a.Logger.Warn("network monitor error", zap.Error(err))
-
 		case <-a.done:
+			return
+
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// handleDNSEvents handles goBPF DNS monitor events
-// ANCHOR: DNS event handler skipped - Dec 26, 2025
-// DNS monitor not available in goBPF security package
-/*
+// handleDNSEvents handles cilium/ebpf DNS monitor events
+// ANCHOR: DNS event handler now available via cilium/ebpf - Dec 27, 2025
+// DNS monitor fully integrated and operational
 func (a *Agent) handleDNSEvents(ctx context.Context) {
 	if a.DNSMonitor == nil {
 		return
 	}
 
+	eventChan := a.DNSMonitor.EventChan()
 	for {
 		select {
-		case gobpfEvent := <-a.DNSMonitor.Events():
-			enrichedEvent, err := a.Enricher.EnrichDNSEvent(ctx, gobpfEvent)
-			if err != nil {
-				a.Logger.Debug("failed to enrich DNS event", zap.Error(err))
+		case enrichedEvent := <-eventChan:
+			if enrichedEvent == nil {
 				continue
 			}
 
 			violations := a.RuleEngine.Match(enrichedEvent)
 			if len(violations) > 0 {
+				a.metricsMutex.Lock()
 				a.violationsFound += int64(len(violations))
+				a.metricsMutex.Unlock()
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
+			a.metricsMutex.Lock()
 			a.eventsProcessed++
-
-		case err := <-a.DNSMonitor.Errors():
-			a.Logger.Warn("DNS monitor error", zap.Error(err))
+			a.metricsMutex.Unlock()
 
 		case <-a.done:
+			return
+
+		case <-ctx.Done():
 			return
 		}
 	}
 }
-*/
 
-// handleFileEvents handles goBPF file monitor events
+// handleFileEvents handles cilium/ebpf file monitor events
 func (a *Agent) handleFileEvents(ctx context.Context) {
 	if a.FileMonitor == nil {
 		return
 	}
 
+	eventChan := a.FileMonitor.EventChan()
 	for {
 		select {
-		case gobpfEvent := <-a.FileMonitor.Events():
-			enrichedEvent, err := a.Enricher.EnrichFileEvent(ctx, gobpfEvent)
-			if err != nil {
-				a.Logger.Debug("failed to enrich file event", zap.Error(err))
+		case enrichedEvent := <-eventChan:
+			if enrichedEvent == nil {
 				continue
 			}
 
@@ -448,27 +422,26 @@ func (a *Agent) handleFileEvents(ctx context.Context) {
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
 
-		case err := <-a.FileMonitor.Errors():
-			a.Logger.Warn("file monitor error", zap.Error(err))
-
 		case <-a.done:
+			return
+
+		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-// handleCapabilityEvents handles goBPF capability monitor events
+// handleCapabilityEvents handles cilium/ebpf capability monitor events
 func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 	if a.CapabilityMonitor == nil {
 		return
 	}
 
+	eventChan := a.CapabilityMonitor.EventChan()
 	for {
 		select {
-		case gobpfEvent := <-a.CapabilityMonitor.Events():
-			enrichedEvent, err := a.Enricher.EnrichCapabilityEvent(ctx, &gobpfEvent)
-			if err != nil {
-				a.Logger.Debug("failed to enrich capability event", zap.Error(err))
+		case enrichedEvent := <-eventChan:
+			if enrichedEvent == nil {
 				continue
 			}
 
@@ -484,10 +457,10 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
 
-		case err := <-a.CapabilityMonitor.Errors():
-			a.Logger.Warn("capability monitor error", zap.Error(err))
-
 		case <-a.done:
+			return
+
+		case <-ctx.Done():
 			return
 		}
 	}
@@ -569,41 +542,38 @@ func (a *Agent) Stop() error {
 
 	var errs []error
 
-	// Close all goBPF monitors
+	// ANCHOR: Close all cilium/ebpf monitors - Dec 27, 2025
+	// Stop() method properly cleans up monitor resources
 	if a.ProcessMonitor != nil {
-		if err := a.ProcessMonitor.Close(); err != nil {
+		if err := a.ProcessMonitor.Stop(); err != nil {
 			a.Logger.Error("failed to close process monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
 	}
 
 	if a.NetworkMonitor != nil {
-		if err := a.NetworkMonitor.Close(); err != nil {
+		if err := a.NetworkMonitor.Stop(); err != nil {
 			a.Logger.Error("failed to close network monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
 	}
 
-	// ANCHOR: DNS monitor close skipped - Dec 26, 2025
-	// DNS monitor not available in goBPF security package
-	/*
 	if a.DNSMonitor != nil {
-		if err := a.DNSMonitor.Close(); err != nil {
+		if err := a.DNSMonitor.Stop(); err != nil {
 			a.Logger.Error("failed to close DNS monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
 	}
-	*/
 
 	if a.FileMonitor != nil {
-		if err := a.FileMonitor.Close(); err != nil {
+		if err := a.FileMonitor.Stop(); err != nil {
 			a.Logger.Error("failed to close file monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
 	}
 
 	if a.CapabilityMonitor != nil {
-		if err := a.CapabilityMonitor.Close(); err != nil {
+		if err := a.CapabilityMonitor.Stop(); err != nil {
 			a.Logger.Error("failed to close capability monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
@@ -638,7 +608,7 @@ func (a *Agent) Health() HealthStatus {
 		Monitors: map[string]bool{
 			"process":     a.ProcessMonitor != nil,
 			"network":     a.NetworkMonitor != nil,
-			"dns":         false, // a.DNSMonitor != nil - DNS monitor not available in goBPF yet
+			"dns":         a.DNSMonitor != nil, // DNS monitor now available via cilium/ebpf
 			"file":        a.FileMonitor != nil,
 			"capability":  a.CapabilityMonitor != nil,
 		},

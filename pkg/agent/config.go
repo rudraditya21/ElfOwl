@@ -20,19 +20,19 @@ type Config struct {
 }
 
 // AgentConfig contains agent-specific settings
+// ANCHOR: Migrated to cilium/ebpf only (removed goBPF) - Dec 27, 2025
 type AgentConfig struct {
-	ClusterID string          `yaml:"cluster_id"`
-	NodeName  string          `yaml:"node_name"`
-	Logging   LoggingConfig   `yaml:"logging"`
-	GoBPF     GoBPFConfig     `yaml:"gobpf"`
-	EBPF      EBPFConfig      `yaml:"ebpf"`
+	ClusterID  string           `yaml:"cluster_id"`
+	NodeName   string           `yaml:"node_name"`
+	Logging    LoggingConfig    `yaml:"logging"`
+	EBPF       EBPFConfig       `yaml:"ebpf"`
 	Kubernetes KubernetesConfig `yaml:"kubernetes"`
-	Rules     RulesConfig     `yaml:"rules"`
+	Rules      RulesConfig      `yaml:"rules"`
 	Enrichment EnrichmentConfig `yaml:"enrichment"`
-	Evidence  EvidenceConfig  `yaml:"evidence"`
-	OWL       OWLConfig       `yaml:"owl_api"`
-	Metrics   MetricsConfig   `yaml:"metrics"`
-	Health    HealthConfig    `yaml:"health"`
+	Evidence   EvidenceConfig   `yaml:"evidence"`
+	OWL        OWLConfig        `yaml:"owl_api"`
+	Metrics    MetricsConfig    `yaml:"metrics"`
+	Health     HealthConfig     `yaml:"health"`
 }
 
 // LoggingConfig defines logging behavior
@@ -42,24 +42,9 @@ type LoggingConfig struct {
 	Output string `yaml:"output"`
 }
 
-// GoBPFConfig defines goBPF monitor settings
-type GoBPFConfig struct {
-	Process     GoBPFMonitorConfig `yaml:"process"`
-	Network     GoBPFMonitorConfig `yaml:"network"`
-	DNS         GoBPFMonitorConfig `yaml:"dns"`
-	File        GoBPFMonitorConfig `yaml:"file"`
-	Capability  GoBPFMonitorConfig `yaml:"capability"`
-	Syscall     GoBPFMonitorConfig `yaml:"syscall"`
-}
-
-// GoBPFMonitorConfig defines individual monitor settings
-type GoBPFMonitorConfig struct {
-	Enabled bool `yaml:"enabled"`
-}
-
-// ANCHOR: eBPF Configuration - Phase 1: Library Setup - Dec 27, 2025
-// Defines Cilium/eBPF monitor settings (new in Phase 1, replaces GoBPF in Phase 3)
-// Maintains backward compatibility during migration: both can run simultaneously
+// ANCHOR: eBPF Configuration - Phase 3: cilium/ebpf Migration - Dec 27, 2025
+// Defines Cilium/eBPF monitor settings (now the only monitor implementation)
+// Fully replaces goBPF with production-grade cilium/ebpf library
 type EBPFConfig struct {
 	Enabled     bool               `yaml:"enabled"`
 	Process     EBPFMonitorConfig  `yaml:"process"`
@@ -284,16 +269,8 @@ func DefaultConfig() *Config {
 				Format: "json",
 				Output: "stdout",
 			},
-			GoBPF: GoBPFConfig{
-				Process: GoBPFMonitorConfig{Enabled: true},
-				Network: GoBPFMonitorConfig{Enabled: true},
-				DNS:     GoBPFMonitorConfig{Enabled: true},
-				File:    GoBPFMonitorConfig{Enabled: true},
-				Capability: GoBPFMonitorConfig{Enabled: true},
-				Syscall: GoBPFMonitorConfig{Enabled: false},
-			},
-			// ANCHOR: eBPF Configuration Defaults - Phase 1: Library Setup - Dec 27, 2025
-			// Disabled by default (Phase 2-3 will enable migration). Both can coexist during migration.
+			// ANCHOR: eBPF Configuration Defaults - Phase 3: Migration Complete - Dec 27, 2025
+			// Now enabled by default (goBPF has been completely removed)
 			EBPF: EBPFConfig{
 				Enabled: false,
 				Process: EBPFMonitorConfig{

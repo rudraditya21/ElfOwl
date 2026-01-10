@@ -1,23 +1,23 @@
 // ANCHOR: Event enrichment pipeline - Dec 26, 2025
-// Converts goBPF events to enriched events with K8s and container context
-// IMPLEMENTATION IN PROGRESS - Week 2 task
+// Converts cilium/ebpf events to enriched events with K8s and container context
+// Phase 3: Migrated from goBPF to cilium/ebpf (Dec 27, 2025)
 
 package enrichment
 
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"go.uber.org/zap"
-	gobpfsecurity "github.com/udyansh/gobpf/security"
 
 	"github.com/udyansh/elf-owl/pkg/kubernetes"
 )
 
-// Enricher adds K8s context to raw goBPF events
+// Enricher adds K8s context to raw cilium/ebpf events
 type Enricher struct {
 	K8sClient *kubernetes.Client
 	ClusterID string
@@ -124,19 +124,30 @@ func (e *Enricher) parseImageTag(image string) string {
 	return "latest"
 }
 
-// EnrichProcessEvent enriches a goBPF process event
+// EnrichProcessEvent enriches a cilium/ebpf process event
 // ANCHOR: Process event enrichment with security context - Phase 2, Dec 26, 2025
+// Migrated from goBPF to cilium/ebpf - Dec 27, 2025
+// Generic implementation that works with any event structure
 // Populates container security context, pod metadata, and RBAC fields
 func (e *Enricher) EnrichProcessEvent(
 	ctx context.Context,
-	gobpfEvent *gobpfsecurity.ProcessEvent,
+	rawEvent interface{},
 ) (*EnrichedEvent, error) {
-	if gobpfEvent == nil {
+	if rawEvent == nil {
 		return nil, fmt.Errorf("nil process event")
 	}
 
+	// Extract fields from raw event using reflection to avoid circular imports
+	// Events from pkg/ebpf have PID, UID, GID, Command, Filename fields
+	v := reflect.ValueOf(rawEvent).Elem()
+	pidVal := v.FieldByName("PID").Uint()
+	uidVal := v.FieldByName("UID").Uint()
+	gidVal := v.FieldByName("GID").Uint()
+	cmdVal := v.FieldByName("Command").String()
+	fnVal := v.FieldByName("Filename").String()
+
 	// Get pod metadata from K8s API (returns nil if not available)
-	podMeta := e.getPodMetadata(ctx, gobpfEvent.ContainerID)
+	podMeta := e.getPodMetadata(ctx, "")
 
 	// Build Kubernetes context with available metadata
 	k8sCtx := &K8sContext{
@@ -183,8 +194,7 @@ func (e *Enricher) EnrichProcessEvent(
 	// ANCHOR: Extract security context from pod metadata - Phase 2.2 fix, Dec 26, 2025
 	// Use pod spec security context values if available, otherwise fall back to defaults
 	containerCtx := &ContainerContext{
-		ContainerID:  gobpfEvent.ContainerID,
-		RunAsRoot:    false, // Will be set below based on podMeta or goBPF UID
+		RunAsRoot: false, // Will be set below based on podMeta or eBPF UID
 	}
 
 	// Apply pod security context
@@ -196,7 +206,7 @@ func (e *Enricher) EnrichProcessEvent(
 		if podMeta.RunAsNonRoot {
 			containerCtx.RunAsRoot = false
 		} else {
-			containerCtx.RunAsRoot = podMeta.RunAsRootContainer || (gobpfEvent.UID == 0)
+			containerCtx.RunAsRoot = podMeta.RunAsRootContainer || (uidVal == 0)
 		}
 		containerCtx.AllowPrivilegeEscalation = podMeta.AllowPrivilegeEscalation
 		containerCtx.Privileged = podMeta.Privileged
@@ -214,7 +224,7 @@ func (e *Enricher) EnrichProcessEvent(
 		containerCtx.CPURequest = podMeta.CPURequest
 	} else {
 		// Fallback to defaults when pod metadata not available
-		containerCtx.RunAsRoot = gobpfEvent.UID == 0
+		containerCtx.RunAsRoot = uidVal == 0
 		containerCtx.AllowPrivilegeEscalation = true  // Default to true (least restrictive)
 		containerCtx.Privileged = false
 		containerCtx.ReadOnlyFilesystem = false
@@ -232,32 +242,41 @@ func (e *Enricher) EnrichProcessEvent(
 	}
 
 	return &EnrichedEvent{
-		RawEvent:  gobpfEvent,
+		RawEvent:  rawEvent,
 		EventType: "process_execution",
 		Timestamp: time.Now(),
 		Kubernetes: k8sCtx,
 		Container: containerCtx,
 		Process: &ProcessContext{
-			PID:         gobpfEvent.PID,
-			UID:         gobpfEvent.UID,
-			GID:         gobpfEvent.GID,
-			Command:     gobpfEvent.Comm,
-			Filename:    gobpfEvent.Filename,
-			ContainerID: gobpfEvent.ContainerID,
+			PID:      uint32(pidVal),
+			UID:      uint32(uidVal),
+			GID:      uint32(gidVal),
+			Command:  cmdVal,
+			Filename: fnVal,
 		},
 	}, nil
 }
 
-// EnrichNetworkEvent enriches a goBPF network event
+// EnrichNetworkEvent enriches a cilium/ebpf network event
 // ANCHOR: Network event enrichment with policy context - Phase 2, Dec 26, 2025
-// Populates network policy and namespace isolation fields
+// Migrated from goBPF to cilium/ebpf with reflection-based field extraction - Dec 27, 2025
+// Populates network policy and namespace isolation fields; uses interface{} to avoid circular imports
 func (e *Enricher) EnrichNetworkEvent(
 	ctx context.Context,
-	gobpfEvent *gobpfsecurity.NetworkEvent,
+	rawEvent interface{},
 ) (*EnrichedEvent, error) {
-	if gobpfEvent == nil {
+	if rawEvent == nil {
 		return nil, fmt.Errorf("nil network event")
 	}
+
+	// Extract fields from raw event using reflection to avoid circular imports
+	// Events from pkg/ebpf have SourceIP, DestinationIP, SourcePort, DestinationPort, Protocol fields
+	v := reflect.ValueOf(rawEvent).Elem()
+	sourceIPVal := v.FieldByName("SourceIP").String()
+	destIPVal := v.FieldByName("DestinationIP").String()
+	sourcePortVal := uint16(v.FieldByName("SourcePort").Uint())
+	destPortVal := uint16(v.FieldByName("DestinationPort").Uint())
+	protocolVal := v.FieldByName("Protocol").String()
 
 	// NetworkEvent doesn't include container ID, so we can't query pod metadata
 	// This will be enhanced in Phase 3 when container ID mapping is available
@@ -282,14 +301,14 @@ func (e *Enricher) EnrichNetworkEvent(
 	// ANCHOR: Network policy evaluation from K8s API - Phase 2.4, Dec 26, 2025
 	// Query NetworkPolicy objects to determine traffic restrictions
 	networkCtx := &NetworkContext{
-		SourceIP:             gobpfEvent.SrcAddr,
-		DestinationIP:        gobpfEvent.DstAddr,
-		SourcePort:           gobpfEvent.SrcPort,
-		DestinationPort:      gobpfEvent.DstPort,
-		Protocol:             gobpfEvent.Protocol.String(),
-		IngressRestricted:    false,
-		EgressRestricted:     false,
-		NamespaceIsolation:   false,
+		SourceIP:           sourceIPVal,
+		DestinationIP:      destIPVal,
+		SourcePort:         sourcePortVal,
+		DestinationPort:    destPortVal,
+		Protocol:           protocolVal,
+		IngressRestricted:  false,
+		EgressRestricted:   false,
+		NamespaceIsolation: false,
 	}
 
 	// Query network policies if pod metadata is available
@@ -306,7 +325,7 @@ func (e *Enricher) EnrichNetworkEvent(
 	}
 
 	return &EnrichedEvent{
-		RawEvent:   gobpfEvent,
+		RawEvent:   rawEvent,
 		EventType:  "network_connection",
 		Timestamp:  time.Now(),
 		Kubernetes: k8sCtx,
@@ -315,46 +334,69 @@ func (e *Enricher) EnrichNetworkEvent(
 	}, nil
 }
 
-// EnrichDNSEvent enriches a goBPF DNS event
-// ANCHOR: DNS event enrichment stub - Dec 26, 2025
-// DNSEvent type not yet available in goBPF security package
-// Commenting out until Week 2 implementation with complete goBPF integration
-/*
+// EnrichDNSEvent enriches a cilium/ebpf DNS event
+// ANCHOR: DNS event enrichment with domain context - Phase 3, Dec 27, 2025
+// Now available with cilium/ebpf; uses reflection-based field extraction to avoid circular imports
+// Populates DNS query information and domain policy fields
 func (e *Enricher) EnrichDNSEvent(
 	ctx context.Context,
-	gobpfEvent *gobpfsecurity.DNSEvent,
+	rawEvent interface{},
 ) (*EnrichedEvent, error) {
-	if gobpfEvent == nil {
+	if rawEvent == nil {
 		return nil, fmt.Errorf("nil DNS event")
 	}
 
-	// TODO: Week 2 implementation
+	// Extract fields from raw event using reflection to avoid circular imports
+	// Events from pkg/ebpf have Query, QueryType, ResponseCode fields
+	v := reflect.ValueOf(rawEvent).Elem()
+	queryNameVal := v.FieldByName("Query").String()
+	queryTypeVal := v.FieldByName("QueryType").String()
+	respCodeVal := int(v.FieldByName("ResponseCode").Uint())
 
-	enrichedEvent := &EnrichedEvent{
-		RawEvent:  gobpfEvent,
-		EventType: "dns_query",
-		Timestamp: time.Now(),
-		Kubernetes: &K8sContext{
-			ClusterID: e.ClusterID,
-			NodeName:  e.NodeName,
-		},
-		Container: &ContainerContext{},
+	// Build Kubernetes context
+	k8sCtx := &K8sContext{
+		ClusterID: e.ClusterID,
+		NodeName:  e.NodeName,
 	}
 
-	return enrichedEvent, nil
-}
-*/
+	// Build DNS context with query and response information
+	dnsCtx := &DNSContext{
+		QueryName:    queryNameVal,
+		QueryType:    queryTypeVal,
+		ResponseCode: respCodeVal,
+		QueryAllowed: respCodeVal == 0, // NOERROR (0) means query was allowed
+	}
 
-// EnrichFileEvent enriches a goBPF file event
+	return &EnrichedEvent{
+		RawEvent:   rawEvent,
+		EventType:  "dns_query",
+		Timestamp:  time.Now(),
+		Kubernetes: k8sCtx,
+		Container:  &ContainerContext{},
+		DNS:        dnsCtx,
+	}, nil
+}
+
+// EnrichFileEvent enriches a cilium/ebpf file event
 // ANCHOR: File event enrichment with read-only context - Phase 2, Dec 26, 2025
-// Populates read-only filesystem and resource limit fields
+// Migrated from goBPF to cilium/ebpf with reflection-based field extraction - Dec 27, 2025
+// Populates read-only filesystem and resource limit fields; uses interface{} to avoid circular imports
 func (e *Enricher) EnrichFileEvent(
 	ctx context.Context,
-	gobpfEvent *gobpfsecurity.FileEvent,
+	rawEvent interface{},
 ) (*EnrichedEvent, error) {
-	if gobpfEvent == nil {
+	if rawEvent == nil {
 		return nil, fmt.Errorf("nil file event")
 	}
+
+	// Extract fields from raw event using reflection to avoid circular imports
+	// Events from pkg/ebpf have PID, UID, Path, Operation, Command fields
+	v := reflect.ValueOf(rawEvent).Elem()
+	pidVal := uint32(v.FieldByName("PID").Uint())
+	uidVal := uint32(v.FieldByName("UID").Uint())
+	pathVal := v.FieldByName("Path").String()
+	opVal := v.FieldByName("Operation").String()
+	cmdVal := v.FieldByName("Command").String()
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -364,45 +406,55 @@ func (e *Enricher) EnrichFileEvent(
 
 	// Build container context with security defaults
 	containerCtx := &ContainerContext{
-		RunAsRoot:              gobpfEvent.UID == 0,
-		ReadOnlyFilesystem:     false, // Default to false (writable)
-		MemoryLimit:            "",    // No limit by default
-		CPULimit:               "",    // No limit by default
-		MemoryRequest:          "",    // No request by default
-		CPURequest:             "",    // No request by default
-		AllowPrivilegeEscalation: true, // Default to true
+		RunAsRoot:               uidVal == 0,
+		ReadOnlyFilesystem:      false, // Default to false (writable)
+		MemoryLimit:             "",    // No limit by default
+		CPULimit:                "",    // No limit by default
+		MemoryRequest:           "",    // No request by default
+		CPURequest:              "",    // No request by default
+		AllowPrivilegeEscalation: true,  // Default to true
 	}
 
 	return &EnrichedEvent{
-		RawEvent:  gobpfEvent,
+		RawEvent:  rawEvent,
 		EventType: "file_access",
 		Timestamp: time.Now(),
 		Kubernetes: k8sCtx,
 		Container: containerCtx,
 		Process: &ProcessContext{
-			PID:     gobpfEvent.PID,
-			UID:     gobpfEvent.UID,
-			Command: gobpfEvent.Comm,
+			PID:     pidVal,
+			UID:     uidVal,
+			Command: cmdVal,
 		},
 		File: &FileContext{
-			Path:      gobpfEvent.Path,
-			Operation: gobpfEvent.Type.String(),
-			PID:       gobpfEvent.PID,
-			UID:       gobpfEvent.UID,
+			Path:      pathVal,
+			Operation: opVal,
+			PID:       pidVal,
+			UID:       uidVal,
 		},
 	}, nil
 }
 
-// EnrichCapabilityEvent enriches a goBPF capability event
+// EnrichCapabilityEvent enriches a cilium/ebpf capability event
 // ANCHOR: Capability event enrichment with privilege escalation context - Phase 2, Dec 26, 2025
-// Populates privilege escalation and capability restriction fields
+// Migrated from goBPF to cilium/ebpf with reflection-based field extraction - Dec 27, 2025
+// Populates privilege escalation and capability restriction fields; uses interface{} to avoid circular imports
 func (e *Enricher) EnrichCapabilityEvent(
 	ctx context.Context,
-	gobpfEvent *gobpfsecurity.CapabilityEvent,
+	rawEvent interface{},
 ) (*EnrichedEvent, error) {
-	if gobpfEvent == nil {
+	if rawEvent == nil {
 		return nil, fmt.Errorf("nil capability event")
 	}
+
+	// Extract fields from raw event using reflection to avoid circular imports
+	// Events from pkg/ebpf have PID, UID, Command, Name, Allowed fields
+	v := reflect.ValueOf(rawEvent).Elem()
+	pidVal := uint32(v.FieldByName("PID").Uint())
+	uidVal := uint32(v.FieldByName("UID").Uint())
+	cmdVal := v.FieldByName("Command").String()
+	nameVal := v.FieldByName("Name").String()
+	allowedVal := v.FieldByName("Allowed").Bool()
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -412,27 +464,27 @@ func (e *Enricher) EnrichCapabilityEvent(
 
 	// Build container context with capability defaults
 	containerCtx := &ContainerContext{
-		RunAsRoot:                gobpfEvent.UID == 0,
+		RunAsRoot:                uidVal == 0,
 		AllowPrivilegeEscalation: true,  // Default to true (least restrictive)
 		Privileged:               false, // Default to false
 	}
 
 	return &EnrichedEvent{
-		RawEvent:  gobpfEvent,
+		RawEvent:  rawEvent,
 		EventType: "capability_usage",
 		Timestamp: time.Now(),
 		Kubernetes: k8sCtx,
 		Container: containerCtx,
 		Process: &ProcessContext{
-			PID:     gobpfEvent.PID,
-			UID:     gobpfEvent.UID,
-			Command: gobpfEvent.Comm,
+			PID:     pidVal,
+			UID:     uidVal,
+			Command: cmdVal,
 		},
 		Capability: &CapabilityContext{
-			Name:    gobpfEvent.Capability.String(),
-			Allowed: gobpfEvent.Allowed,
-			PID:     gobpfEvent.PID,
-			UID:     gobpfEvent.UID,
+			Name:    nameVal,
+			Allowed: allowedVal,
+			PID:     pidVal,
+			UID:     uidVal,
 		},
 	}, nil
 }
