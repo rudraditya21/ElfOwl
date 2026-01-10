@@ -67,7 +67,7 @@ func TestEventPipelineStartToFinish(t *testing.T) {
 	// Verify pipeline execution
 	if len(received) > 0 {
 		event := received[0]
-		AssertEnrichedEvent(t, event, "process_exec")
+		AssertEnrichedEvent(t, event, "process_execution")
 		if event.Process == nil {
 			t.Error("expected ProcessContext in enriched event")
 		}
@@ -161,9 +161,9 @@ func TestEventFilteringCapabilities(t *testing.T) {
 		shouldPass bool
 	}{
 		{
-			name: "process_exec event",
+			name: "process_execution event",
 			event: &enrichment.EnrichedEvent{
-				EventType: "process_exec",
+				EventType: "process_execution",
 				Timestamp: time.Now(),
 			},
 			shouldPass: true,
@@ -205,7 +205,7 @@ func TestEventFilteringCapabilities(t *testing.T) {
 	// Define a simple filter function
 	isAllowedType := func(event *enrichment.EnrichedEvent) bool {
 		allowedTypes := map[string]bool{
-			"process_exec":        true,
+			"process_execution":        true,
 			"network_connection":  true,
 			"file_access":         true,
 			"capability_usage":    true,
@@ -239,7 +239,7 @@ func TestContextTypeConsistency(t *testing.T) {
 		{
 			name: "ProcessContext present for process events",
 			event: &enrichment.EnrichedEvent{
-				EventType: "process_exec",
+				EventType: "process_execution",
 				Process:   &enrichment.ProcessContext{PID: 100},
 			},
 			expectedField: "Process",
@@ -298,7 +298,7 @@ func TestContextTypeConsistency(t *testing.T) {
 func TestEnrichedEventFields(t *testing.T) {
 	event := &enrichment.EnrichedEvent{
 		RawEvent:  &ProcessEvent{PID: 1000},
-		EventType: "process_exec",
+		EventType: "process_execution",
 		Process: &enrichment.ProcessContext{
 			PID: 1000,
 		},
@@ -315,7 +315,7 @@ func TestEnrichedEventFields(t *testing.T) {
 	if event.Timestamp.IsZero() {
 		t.Error("Timestamp is zero")
 	}
-	if event.Process == nil && event.EventType == "process_exec" {
+	if event.Process == nil && event.EventType == "process_execution" {
 		t.Error("Process context missing for process event")
 	}
 
@@ -403,7 +403,7 @@ func TestEventProcessingLatency(t *testing.T) {
 
 	// Create a simple event
 	event := &enrichment.EnrichedEvent{
-		EventType: "process_exec",
+		EventType: "process_execution",
 		Timestamp: time.Now(),
 	}
 

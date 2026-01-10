@@ -83,7 +83,7 @@ func TestMonitorEventChannelBroadcast(t *testing.T) {
 	select {
 	case event := <-eventChan:
 		if event != nil {
-			AssertEnrichedEvent(t, event, "process_exec")
+			AssertEnrichedEvent(t, event, "process_execution")
 		}
 	case <-time.After(200 * time.Millisecond):
 		// Timeout is acceptable - mock reader has no real events
@@ -100,8 +100,8 @@ func TestEnrichedEventTyping(t *testing.T) {
 		}, context.CancelFunc)
 	}{
 		{
-			name:      "ProcessMonitor produces process_exec events",
-			eventType: "process_exec",
+			name:      "ProcessMonitor produces process_execution events",
+			eventType: "process_execution",
 			setupMonitor: func() (interface {
 				EventChan() <-chan *enrichment.EnrichedEvent
 			}, context.CancelFunc) {
