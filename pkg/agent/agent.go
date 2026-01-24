@@ -76,6 +76,12 @@ type HealthStatus struct {
 	Status           string            `json:"status"`
 }
 
+// ANCHOR: Monitor bootstrapping fallback - Phase 3.5 Week 4
+// Provides placeholder ProgramSet instances until bytecode loading is available.
+func newMonitorProgramSet() *ebpf.ProgramSet {
+	return &ebpf.ProgramSet{}
+}
+
 // NewAgent creates a new agent instance with all components
 func NewAgent(config *Config) (*Agent, error) {
 	// Initialize logger
@@ -97,31 +103,31 @@ func NewAgent(config *Config) (*Agent, error) {
 	// Create monitor with nil ProgramSet (will be loaded by Start())
 	if config.Agent.EBPF.Enabled {
 		if config.Agent.EBPF.Process.Enabled {
-			processMonitor := ebpf.NewProcessMonitor(nil, agent.Logger)
+			processMonitor := ebpf.NewProcessMonitor(newMonitorProgramSet(), agent.Logger)
 			agent.ProcessMonitor = processMonitor
 			agent.Logger.Info("process monitor initialized")
 		}
 
 		if config.Agent.EBPF.Network.Enabled {
-			networkMonitor := ebpf.NewNetworkMonitor(nil, agent.Logger)
+			networkMonitor := ebpf.NewNetworkMonitor(newMonitorProgramSet(), agent.Logger)
 			agent.NetworkMonitor = networkMonitor
 			agent.Logger.Info("network monitor initialized")
 		}
 
 		if config.Agent.EBPF.DNS.Enabled {
-			dnsMonitor := ebpf.NewDNSMonitor(nil, agent.Logger)
+			dnsMonitor := ebpf.NewDNSMonitor(newMonitorProgramSet(), agent.Logger)
 			agent.DNSMonitor = dnsMonitor
 			agent.Logger.Info("DNS monitor initialized")
 		}
 
 		if config.Agent.EBPF.File.Enabled {
-			fileMonitor := ebpf.NewFileMonitor(nil, agent.Logger)
+			fileMonitor := ebpf.NewFileMonitor(newMonitorProgramSet(), agent.Logger)
 			agent.FileMonitor = fileMonitor
 			agent.Logger.Info("file monitor initialized")
 		}
 
 		if config.Agent.EBPF.Capability.Enabled {
-			capMonitor := ebpf.NewCapabilityMonitor(nil, agent.Logger)
+			capMonitor := ebpf.NewCapabilityMonitor(newMonitorProgramSet(), agent.Logger)
 			agent.CapabilityMonitor = capMonitor
 			agent.Logger.Info("capability monitor initialized")
 		}

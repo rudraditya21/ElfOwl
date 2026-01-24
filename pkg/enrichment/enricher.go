@@ -7,6 +7,7 @@ package enrichment
 import (
 	"context"
 	"fmt"
+	"net"
 	"reflect"
 	"strings"
 	"sync"
@@ -43,6 +44,184 @@ func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string) (*Enr
 		Logger:              logger,
 		containerToPodCache: make(map[string]string),
 	}, nil
+}
+
+// ANCHOR: Reflection helpers for eBPF events - Phase 3 debugging support - Jan 2026
+var dnsQueryTypeNames = map[uint16]string{
+	1:  "A",
+	2:  "NS",
+	5:  "CNAME",
+	6:  "SOA",
+	12: "PTR",
+	15: "MX",
+	16: "TXT",
+	28: "AAAA",
+	33: "SRV",
+	42: "NAPTR",
+	43: "DS",
+	48: "DNSKEY",
+	255:"ANY",
+}
+
+var dnsResponseCodeNames = map[uint8]string{
+	0: "NOERROR",
+	1: "FORMERR",
+	2: "SERVFAIL",
+	3: "NXDOMAIN",
+	4: "NOTIMP",
+	5: "REFUSED",
+	6: "YXDOMAIN",
+	7: "YXRRSET",
+	8: "NXRRSET",
+	9: "NOTAUTH",
+	10:"NOTZONE",
+}
+
+var capabilityNames = map[uint32]string{
+	0:  "CAP_CHOWN",
+	1:  "CAP_DAC_OVERRIDE",
+	2:  "CAP_DAC_READ_SEARCH",
+	3:  "CAP_FOWNER",
+	4:  "CAP_FSETID",
+	5:  "CAP_KILL",
+	6:  "CAP_SETGID",
+	7:  "CAP_SETUID",
+	8:  "CAP_SETFCAP",
+	9:  "CAP_SETPCAP",
+	10: "CAP_NET_RAW",
+	11: "CAP_NET_BIND_SERVICE",
+	12: "CAP_NET_ADMIN",
+	13: "CAP_NET_BROADCAST",
+	14: "CAP_SYS_CHROOT",
+	15: "CAP_SYS_MODULE",
+	16: "CAP_SYS_PTRACE",
+	17: "CAP_SYS_RAWIO",
+	18: "CAP_SYS_PACCT",
+	19: "CAP_SYS_ADMIN",
+	20: "CAP_SYS_BOOT",
+	21: "CAP_SYS_NICE",
+	22: "CAP_SYS_RESOURCE",
+	23: "CAP_SYS_TIME",
+	24: "CAP_SYS_TTY_CONFIG",
+	25: "CAP_MKNOD",
+	26: "CAP_LEASE",
+	27: "CAP_AUDIT_WRITE",
+	28: "CAP_AUDIT_CONTROL",
+	29: "CAP_SETFATTR",
+	30: "CAP_MAC_OVERRIDE",
+	31: "CAP_MAC_ADMIN",
+	32: "CAP_SYSLOG",
+	33: "CAP_WAKE_ALARM",
+	34: "CAP_BLOCK_SUSPEND",
+	35: "CAP_AUDIT_READ",
+	36: "CAP_PERFMON",
+	37: "CAP_BPF",
+	38: "CAP_CHECKPOINT_RESTORE",
+}
+
+func resolveEventValue(raw interface{}) (reflect.Value, error) {
+	v := reflect.ValueOf(raw)
+	if !v.IsValid() {
+		return reflect.Value{}, fmt.Errorf("invalid event")
+	}
+	if v.Kind() == reflect.Ptr {
+		if v.IsNil() {
+			return reflect.Value{}, fmt.Errorf("nil event pointer")
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return reflect.Value{}, fmt.Errorf("expected struct event, got %s", v.Kind())
+	}
+	return v, nil
+}
+
+func fieldUintValue(v reflect.Value, name string) uint64 {
+	f := v.FieldByName(name)
+	if !f.IsValid() {
+		return 0
+	}
+	switch f.Kind() {
+	case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uint:
+		return f.Uint()
+	case reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64, reflect.Int:
+		return uint64(f.Int())
+	default:
+		return 0
+	}
+}
+
+func fieldStringValue(v reflect.Value, name string) string {
+	f := v.FieldByName(name)
+	if !f.IsValid() {
+		return ""
+	}
+	switch f.Kind() {
+	case reflect.Array, reflect.Slice:
+		b := make([]byte, f.Len())
+		for i := 0; i < f.Len(); i++ {
+			elem := f.Index(i)
+			if elem.Kind() == reflect.Uint8 {
+				b[i] = byte(elem.Uint())
+			}
+		}
+		return strings.TrimRight(string(b), "\x00")
+	case reflect.String:
+		return f.String()
+	default:
+		return ""
+	}
+}
+
+func ipFromUint32(addr uint32) string {
+	return net.IPv4(byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24)).String()
+}
+
+func protocolName(proto uint64) string {
+	switch proto {
+	case 17:
+		return "udp"
+	case 6:
+		return "tcp"
+	default:
+		return "unknown"
+	}
+}
+
+func fileOperationName(op uint64) string {
+	switch op {
+	case 1:
+		return "write"
+	case 2:
+		return "read"
+	case 3:
+		return "chmod"
+	case 4:
+		return "unlink"
+	default:
+		return "unknown"
+	}
+}
+
+func dnsQueryTypeName(qtype uint16) string {
+	if name, ok := dnsQueryTypeNames[qtype]; ok {
+		return name
+	}
+	return fmt.Sprintf("TYPE%d", qtype)
+}
+
+func dnsResponseCodeName(rcode uint8) string {
+	if name, ok := dnsResponseCodeNames[rcode]; ok {
+		return name
+	}
+	return fmt.Sprintf("RCODE%d", rcode)
+}
+
+func capabilityNameFromID(id uint32) string {
+	if name, ok := capabilityNames[id]; ok {
+		return name
+	}
+	return fmt.Sprintf("CAP_UNKNOWN_%d", id)
 }
 
 // ANCHOR: Helper methods for enrichment field extraction - Phase 2, Dec 26, 2025
@@ -137,14 +316,19 @@ func (e *Enricher) EnrichProcessEvent(
 		return nil, fmt.Errorf("nil process event")
 	}
 
-	// Extract fields from raw event using reflection to avoid circular imports
-	// Events from pkg/ebpf have PID, UID, GID, Command, Filename fields
-	v := reflect.ValueOf(rawEvent).Elem()
-	pidVal := v.FieldByName("PID").Uint()
-	uidVal := v.FieldByName("UID").Uint()
-	gidVal := v.FieldByName("GID").Uint()
-	cmdVal := v.FieldByName("Command").String()
-	fnVal := v.FieldByName("Filename").String()
+	// Extract fields from raw event using reflection (no pkg/ebpf import)
+	v, err := resolveEventValue(rawEvent)
+	if err != nil {
+		return nil, err
+	}
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	uidVal := uint32(fieldUintValue(v, "UID"))
+	gidVal := uint32(fieldUintValue(v, "GID"))
+	cmdVal := fieldStringValue(v, "Argv")
+	if cmdVal == "" {
+		cmdVal = fieldStringValue(v, "Filename")
+	}
+	fnVal := fieldStringValue(v, "Filename")
 
 	// Get pod metadata from K8s API (returns nil if not available)
 	podMeta := e.getPodMetadata(ctx, "")
@@ -269,14 +453,15 @@ func (e *Enricher) EnrichNetworkEvent(
 		return nil, fmt.Errorf("nil network event")
 	}
 
-	// Extract fields from raw event using reflection to avoid circular imports
-	// Events from pkg/ebpf have SourceIP, DestinationIP, SourcePort, DestinationPort, Protocol fields
-	v := reflect.ValueOf(rawEvent).Elem()
-	sourceIPVal := v.FieldByName("SourceIP").String()
-	destIPVal := v.FieldByName("DestinationIP").String()
-	sourcePortVal := uint16(v.FieldByName("SourcePort").Uint())
-	destPortVal := uint16(v.FieldByName("DestinationPort").Uint())
-	protocolVal := v.FieldByName("Protocol").String()
+	v, err := resolveEventValue(rawEvent)
+	if err != nil {
+		return nil, err
+	}
+	sourceIPVal := ipFromUint32(uint32(fieldUintValue(v, "SAddr")))
+	destIPVal := ipFromUint32(uint32(fieldUintValue(v, "DAddr")))
+	sourcePortVal := uint16(fieldUintValue(v, "SPort"))
+	destPortVal := uint16(fieldUintValue(v, "DPort"))
+	protocolVal := protocolName(fieldUintValue(v, "Protocol"))
 
 	// NetworkEvent doesn't include container ID, so we can't query pod metadata
 	// This will be enhanced in Phase 3 when container ID mapping is available
@@ -346,12 +531,14 @@ func (e *Enricher) EnrichDNSEvent(
 		return nil, fmt.Errorf("nil DNS event")
 	}
 
-	// Extract fields from raw event using reflection to avoid circular imports
-	// Events from pkg/ebpf have Query, QueryType, ResponseCode fields
-	v := reflect.ValueOf(rawEvent).Elem()
-	queryNameVal := v.FieldByName("Query").String()
-	queryTypeVal := v.FieldByName("QueryType").String()
-	respCodeVal := int(v.FieldByName("ResponseCode").Uint())
+	v, err := resolveEventValue(rawEvent)
+	if err != nil {
+		return nil, err
+	}
+	queryNameVal := fieldStringValue(v, "QueryName")
+	queryTypeVal := dnsQueryTypeName(uint16(fieldUintValue(v, "QueryType")))
+	respCodeVal := int(fieldUintValue(v, "ResponseCode"))
+	queryAllowed := fieldUintValue(v, "QueryAllowed") == 1
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -364,7 +551,7 @@ func (e *Enricher) EnrichDNSEvent(
 		QueryName:    queryNameVal,
 		QueryType:    queryTypeVal,
 		ResponseCode: respCodeVal,
-		QueryAllowed: respCodeVal == 0, // NOERROR (0) means query was allowed
+		QueryAllowed: queryAllowed,
 	}
 
 	return &EnrichedEvent{
@@ -389,14 +576,15 @@ func (e *Enricher) EnrichFileEvent(
 		return nil, fmt.Errorf("nil file event")
 	}
 
-	// Extract fields from raw event using reflection to avoid circular imports
-	// Events from pkg/ebpf have PID, UID, Path, Operation, Command fields
-	v := reflect.ValueOf(rawEvent).Elem()
-	pidVal := uint32(v.FieldByName("PID").Uint())
-	uidVal := uint32(v.FieldByName("UID").Uint())
-	pathVal := v.FieldByName("Path").String()
-	opVal := v.FieldByName("Operation").String()
-	cmdVal := v.FieldByName("Command").String()
+	v, err := resolveEventValue(rawEvent)
+	if err != nil {
+		return nil, err
+	}
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	uidVal := uint32(fieldUintValue(v, "UID"))
+	pathVal := fieldStringValue(v, "Filename")
+	opVal := fileOperationName(fieldUintValue(v, "Operation"))
+	cmdVal := fieldStringValue(v, "Filename")
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -447,14 +635,19 @@ func (e *Enricher) EnrichCapabilityEvent(
 		return nil, fmt.Errorf("nil capability event")
 	}
 
-	// Extract fields from raw event using reflection to avoid circular imports
-	// Events from pkg/ebpf have PID, UID, Command, Name, Allowed fields
-	v := reflect.ValueOf(rawEvent).Elem()
-	pidVal := uint32(v.FieldByName("PID").Uint())
-	uidVal := uint32(v.FieldByName("UID").Uint())
-	cmdVal := v.FieldByName("Command").String()
-	nameVal := v.FieldByName("Name").String()
-	allowedVal := v.FieldByName("Allowed").Bool()
+	v, err := resolveEventValue(rawEvent)
+	if err != nil {
+		return nil, err
+	}
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	uidVal := uint32(fieldUintValue(v, "UID"))
+	cmdVal := fieldStringValue(v, "SyscallName")
+	if cmdVal == "" {
+		cmdVal = fieldStringValue(v, "Command")
+	}
+	capabilityID := uint32(fieldUintValue(v, "Capability"))
+	allowedVal := fieldUintValue(v, "CheckType") != 2
+	nameVal := capabilityNameFromID(capabilityID)
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
