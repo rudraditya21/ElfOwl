@@ -1,0 +1,13 @@
+apiVersion: v2
+name: elf-owl
+description: Kubernetes-native eBPF security monitoring and compliance agent
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - security
+  - compliance
+  - ebpf
+  - monitoring
+maintainers:
+  - name: elf-owl maintainers

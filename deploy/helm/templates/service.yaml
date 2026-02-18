@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: elf-owl
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: elf-owl
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  selector:
+    app: elf-owl
+  ports:
+    # Prometheus metrics scrape port
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+    # Kubernetes liveness/readiness health check port
+    - name: health
+      port: 9091
+      targetPort: 9091
+      protocol: TCP

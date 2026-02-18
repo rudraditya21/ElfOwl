@@ -11,7 +11,7 @@ import (
 
 // EnrichedEvent is an event with added K8s, container, and runtime context
 type EnrichedEvent struct {
-	// Original goBPF event
+	// Original cilium/ebpf event (interface{} to avoid circular import)
 	RawEvent  interface{} `json:"raw_event"`
 	EventType string      `json:"event_type"`
 
@@ -99,7 +99,7 @@ type ContainerContext struct {
 	KernelHardening          bool   `json:"kernel_hardening"`
 }
 
-// ProcessContext captures process metadata from goBPF events
+// ProcessContext captures process metadata from cilium/ebpf events
 // ANCHOR: Process context extensions - Feature: parent PID + arguments - Jan 2026
 // Adds parent PID and argument list for richer forensic context.
 type ProcessContext struct {
@@ -113,7 +113,7 @@ type ProcessContext struct {
 	ContainerID string   `json:"container_id"`
 }
 
-// FileContext captures file metadata from goBPF events
+// FileContext captures file metadata from cilium/ebpf events
 type FileContext struct {
 	Path      string `json:"path"`
 	Operation string `json:"operation"`
@@ -139,7 +139,7 @@ type NodeMetadata = kubernetes.NodeMetadata
 // ANCHOR: Network and DNS contexts for Phase 1 - Dec 26, 2025
 // Support for network policy and DNS rule matching
 
-// NetworkContext captures network metadata from goBPF events
+// NetworkContext captures network metadata from cilium/ebpf events
 type NetworkContext struct {
 	SourceIP           string `json:"source_ip"`
 	DestinationIP      string `json:"destination_ip"`
@@ -154,7 +154,7 @@ type NetworkContext struct {
 	NamespaceIsolation bool   `json:"namespace_isolation"`
 }
 
-// DNSContext captures DNS query metadata from goBPF events
+// DNSContext captures DNS query metadata from cilium/ebpf events
 type DNSContext struct {
 	QueryName      string   `json:"query_name"`
 	QueryType      string   `json:"query_type"` // A, AAAA, MX, etc.

@@ -5,8 +5,12 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -74,24 +78,98 @@ func NewClient(
 	}, nil
 }
 
-// Push sends buffered events to Owl SaaS (single attempt)
-func (c *Client) Push(ctx context.Context, bufferedEvents []*evidence.BufferedEvent) error {
-	// TODO: Week 3 implementation
-	// 1. Convert buffered events to signed/encrypted format
-	// 2. Build push batch
-	// 3. Compress with gzip
-	// 4. Send to Owl SaaS
-	// 5. Handle response
+// PushBatch is the JSON payload sent to the Owl SaaS events endpoint.
+type PushBatch struct {
+	ClusterID string                   `json:"cluster_id"`
+	NodeName  string                   `json:"node_name"`
+	Events    []*evidence.BufferedEvent `json:"events"`
+	Signature string                   `json:"signature"`
+	SentAt    time.Time                `json:"sent_at"`
+}
 
+// Push sends buffered events to Owl SaaS (single attempt).
+//
+// ANCHOR: Implement event push: JSON+sign+gzip+HTTP POST - Feb 18, 2026
+// WHY: Previously returned "not yet implemented"; events were buffered locally
+//      but never shipped to the Owl compliance platform.
+// WHAT: Serialise the batch to JSON, sign it with HMAC-SHA256 for integrity,
+//       gzip-compress the payload to reduce bandwidth, then POST to the Owl
+//       /api/v1/evidence endpoint with JWT Bearer auth and cluster identity headers.
+// HOW:  1. json.Marshal the PushBatch (events + cluster metadata)
+//       2. Sign the raw JSON bytes with c.signer.Sign() → HMAC-SHA256 hex
+//       3. Embed signature in a wrapper, re-marshal, gzip compress
+//       4. POST with Authorization, Content-Encoding, X-Cluster-ID headers
+//       5. Accept HTTP 200/202; anything else is an error
+func (c *Client) Push(ctx context.Context, bufferedEvents []*evidence.BufferedEvent) error {
 	if len(bufferedEvents) == 0 {
 		return nil
 	}
 
-	c.logger.Debug("push: processing events",
+	c.logger.Debug("push: serialising events",
 		zap.Int("count", len(bufferedEvents)),
 	)
 
-	return fmt.Errorf("not yet implemented")
+	// Step 1: Build batch payload
+	batch := &PushBatch{
+		ClusterID: c.clusterID,
+		NodeName:  c.nodeName,
+		Events:    bufferedEvents,
+		SentAt:    time.Now().UTC(),
+	}
+
+	// Step 2: Marshal to JSON
+	rawJSON, err := json.Marshal(batch)
+	if err != nil {
+		return fmt.Errorf("push: marshal batch: %w", err)
+	}
+
+	// Step 3: Sign the raw JSON for integrity verification by Owl SaaS
+	if c.signer != nil {
+		batch.Signature = c.signer.Sign(rawJSON)
+		// Re-marshal with signature included
+		rawJSON, err = json.Marshal(batch)
+		if err != nil {
+			return fmt.Errorf("push: marshal signed batch: %w", err)
+		}
+	}
+
+	// Step 4: gzip compress
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	if _, err := gz.Write(rawJSON); err != nil {
+		return fmt.Errorf("push: gzip write: %w", err)
+	}
+	if err := gz.Close(); err != nil {
+		return fmt.Errorf("push: gzip close: %w", err)
+	}
+
+	// Step 5: POST to Owl SaaS
+	url := c.endpoint + "/api/v1/evidence"
+	resp, err := c.httpClient.R().
+		SetContext(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetHeader("Content-Encoding", "gzip").
+		SetHeader("Authorization", "Bearer "+c.jwtToken).
+		SetHeader("X-Cluster-ID", c.clusterID).
+		SetHeader("X-Node-Name", c.nodeName).
+		SetBody(buf.Bytes()).
+		Post(url)
+
+	if err != nil {
+		return fmt.Errorf("push: http post: %w", err)
+	}
+
+	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusAccepted {
+		return fmt.Errorf("push: unexpected status %d: %s", resp.StatusCode(), resp.String())
+	}
+
+	c.logger.Debug("push: succeeded",
+		zap.Int("events", len(bufferedEvents)),
+		zap.Int("compressedBytes", buf.Len()),
+		zap.Int("statusCode", resp.StatusCode()),
+	)
+
+	return nil
 }
 
 // PushWithRetry sends events with exponential backoff retry

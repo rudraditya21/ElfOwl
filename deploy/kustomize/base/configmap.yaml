@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elf-owl-config
+  namespace: elf-owl-system
+  labels:
+    app: elf-owl
+data:
+  elf-owl.yaml: |
+    agent:
+      cluster_id: "default"
+      node_name: ""
+
+      logging:
+        level: "info"
+        format: "json"
+        output: "stdout"
+
+      ebpf:
+        enabled: true
+        process:
+          enabled: true
+          buffer_size: 8192
+          timeout: 5s
+        network:
+          enabled: true
+          buffer_size: 8192
+          timeout: 5s
+        dns:
+          enabled: true
+          buffer_size: 8192
+          timeout: 5s
+        file:
+          enabled: true
+          buffer_size: 8192
+          timeout: 5s
+        capability:
+          enabled: true
+          buffer_size: 8192
+          timeout: 5s
+
+      kubernetes:
+        in_cluster: true
+        metadata_cache_ttl: 60s
+
+      owl_api:
+        endpoint: "https://api.owl-platform.com"
+        auth:
+          method: "jwt"
+          token_path: "/var/run/secrets/owl-api-token/api-token"
+        push:
+          batch_size: 100
+          batch_timeout: 10s
+          enabled: true
+          dry_run: false
+        retry:
+          max_retries: 10
+          initial_backoff: 1s
+          max_backoff: 60s
+          backoff_multiplier: 2.0
+        tls:
+          enabled: true
+          verify: true
+
+      metrics:
+        enabled: true
+        listen_address: ":9090"
+        path: "/metrics"
+
+      health:
+        enabled: true
+        listen_address: ":9091"
+        path: "/health"

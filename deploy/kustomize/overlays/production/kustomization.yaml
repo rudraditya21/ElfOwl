@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Production overlay — patches base with production-specific values.
+# Usage: kubectl apply -k deploy/kustomize/overlays/production
+
+bases:
+  - ../../base
+
+# Override cluster_id and endpoint for production via ConfigMap patch
+patchesStrategicMerge:
+  - configmap-patch.yaml
+
+# Override image tag for production release
+images:
+  - name: elf-owl
+    newTag: "0.1.0"

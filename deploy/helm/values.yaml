@@ -1,0 +1,71 @@
+# elf-owl Helm chart default values
+
+image:
+  repository: elf-owl
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+# Cluster identity (required)
+clusterID: "default"
+nodeName: ""  # Defaults to spec.nodeName via fieldRef
+
+# Owl SaaS API endpoint
+owl:
+  endpoint: "https://api.owl-platform.com"
+  # Secret name containing key "api-token"
+  apiTokenSecret: "elf-owl-api-token"
+
+# eBPF monitor toggles
+ebpf:
+  enabled: true
+  process:
+    enabled: true
+    bufferSize: 8192
+  network:
+    enabled: true
+    bufferSize: 8192
+  dns:
+    enabled: true
+    bufferSize: 8192
+  file:
+    enabled: true
+    bufferSize: 8192
+  capability:
+    enabled: true
+    bufferSize: 8192
+
+# Health server (exposed via Service port 9091)
+health:
+  enabled: true
+  listenAddress: ":9091"
+  path: "/health"
+
+# Prometheus metrics server (exposed via Service port 9090)
+metrics:
+  enabled: true
+  listenAddress: ":9090"
+  path: "/metrics"
+
+# Logging
+logging:
+  level: "info"
+  format: "json"
+
+# Resource limits
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Tolerations to run on every node including control-plane
+tolerations:
+  - operator: Exists
+
+# Update strategy for DaemonSet
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1

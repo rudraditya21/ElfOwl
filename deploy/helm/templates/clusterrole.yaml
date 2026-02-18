@@ -1,0 +1,29 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: elf-owl
+  labels:
+    app: elf-owl
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+rules:
+  # Read pod metadata for event enrichment (namespace, labels, service account, image)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Read service accounts to populate kubernetes.service_account field
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list"]
+  # Read network policies to populate kubernetes.has_default_deny_network_policy
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["get", "list"]
+  # Read cluster roles and bindings for RBAC enrichment (CIS 5.x rules)
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "clusterroles", "rolebindings", "clusterrolebindings"]
+    verbs: ["get", "list"]
+  # Read nodes for node-level context
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]

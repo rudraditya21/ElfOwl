@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: elf-owl
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: elf-owl
+    chart: {{ .Chart.Name }}-{{ .Chart.Version }}
+    release: {{ .Release.Name }}
+spec:
+  selector:
+    matchLabels:
+      app: elf-owl
+  updateStrategy:
+    type: {{ .Values.updateStrategy.type }}
+    rollingUpdate:
+      maxUnavailable: {{ .Values.updateStrategy.rollingUpdate.maxUnavailable }}
+  template:
+    metadata:
+      labels:
+        app: elf-owl
+        release: {{ .Release.Name }}
+    spec:
+      serviceAccountName: elf-owl
+      hostPID: true      # Required: read /proc/<pid>/cgroup for container ID lookup
+      hostNetwork: false
+
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+
+      containers:
+        - name: elf-owl
+          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          # eBPF programs require CAP_SYS_ADMIN (load BPF programs and maps)
+          # CAP_SYS_RESOURCE allows raising RLIMIT_MEMLOCK for BPF map memory
+          securityContext:
+            privileged: false
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - SYS_PTRACE
+              drop:
+                - NET_RAW
+
+          env:
+            - name: OWL_CLUSTER_ID
+              value: {{ .Values.clusterID | quote }}
+            - name: OWL_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OWL_API_ENDPOINT
+              value: {{ .Values.owl.endpoint | quote }}
+            - name: OWL_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.owl.apiTokenSecret }}
+                  key: api-token
+
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 9091
+              protocol: TCP
+
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.health.path }}
+              port: 9091
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.health.path }}
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          volumeMounts:
+            # Agent reads configuration from ConfigMap
+            - name: config
+              mountPath: /etc/elf-owl
+              readOnly: true
+            # eBPF loader needs access to kernel debug/tracing for tracepoint IDs
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            # Read /proc for container ID and process metadata enrichment
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: elf-owl-config
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+            type: DirectoryOrCreate
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory

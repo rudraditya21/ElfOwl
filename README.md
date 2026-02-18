@@ -12,7 +12,7 @@
 
 elf-owl is a minimal compliance observer agent that detects CIS Kubernetes v1.8 violations using:
 
-- **Direct goBPF Integration**: Kernel-native eBPF monitoring (zero wrapper overhead)
+- **cilium/ebpf Integration**: Kernel-native eBPF monitoring via the production-grade cilium/ebpf library
 - **Read-Only Design**: Zero enforcement capability (only detection)
 - **Push-Only Architecture**: One-way outbound to Owl SaaS (no inbound commands)
 - **Signed + Encrypted Evidence**: HMAC-SHA256 signing + AES-256-GCM encryption
@@ -53,9 +53,9 @@ elf-owl is a minimal compliance observer agent that detects CIS Kubernetes v1.8 
 ## Architecture
 
 ```
-goBPF Kernel Events
+cilium/ebpf Kernel Events
     ↓
-Process/Network/DNS/File/Capability Monitors (direct import)
+Process/Network/DNS/File/Capability Monitors (cilium/ebpf)
     ↓
 Event Enrichment (K8s metadata injection)
     ↓
@@ -98,7 +98,7 @@ elf-owl/
 │   └── kustomize/               # Kustomize overlays
 ├── test/                        # Unit, integration, E2E tests
 ├── docs/                        # Architecture, deployment guides
-└── go.mod                       # Direct goBPF integration
+└── go.mod                       # cilium/ebpf + Go module dependencies
 ```
 
 **Total Implementation:** ~1200 LOC core code (excluding tests, docs, config)
@@ -109,7 +109,7 @@ elf-owl/
 
 ### ✅ Week 1: Bootstrap (COMPLETE)
 - [x] Project structure initialized
-- [x] go.mod with goBPF dependency
+- [x] go.mod with cilium/ebpf dependency
 - [x] Configuration schema (config.go)
 - [x] Logger setup (logger.go)
 - [x] Agent orchestrator skeleton (agent.go)
@@ -169,7 +169,7 @@ elf-owl/
 - [ ] Integration tests (~350 LOC)
   - [ ] Full event pipeline
   - [ ] K8s metadata injection
-  - [ ] Mock goBPF integration
+  - [ ] Mock cilium/ebpf monitor integration
 - [ ] E2E tests (~150 LOC)
   - [ ] Deploy to test cluster
   - [ ] Generate violations
@@ -193,7 +193,7 @@ elf-owl/
 
 - Go 1.23+
 - Kubernetes 1.24+ cluster (for deployment)
-- goBPF library (auto-imported via go.mod)
+- cilium/ebpf library (auto-imported via go.mod)
 
 ### Build
 
@@ -303,8 +303,8 @@ See `config/elf-owl.yaml` for all configuration options.
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `cluster_id` | default | Cluster identifier |
-| `gobpf.process.enabled` | true | Process monitoring |
-| `gobpf.network.enabled` | true | Network monitoring |
+| `ebpf.process.enabled` | true | Process monitoring |
+| `ebpf.network.enabled` | true | Network monitoring |
 | `kubernetes.in_cluster` | true | K8s API access mode |
 | `owl_api.endpoint` | - | Owl SaaS endpoint |
 | `owl_api.push.batch_size` | 100 | Events per batch |
@@ -329,9 +329,9 @@ go test ./test/e2e/...
 
 ### Code Structure
 
-- **Core Agent**: `pkg/agent/agent.go` (orchestrates goBPF monitors)
-- **goBPF Integration**: Direct imports from `github.com/udyansh/gobpf`
-- **Event Pipeline**: enrichment → rules → evidence → push
+- **Core Agent**: `pkg/agent/agent.go` (orchestrates cilium/ebpf monitors)
+- **eBPF Integration**: `github.com/cilium/ebpf` via `pkg/ebpf/` monitors
+- **Event Pipeline**: eBPF → enrichment → rules → evidence → push
 - **No Wrapper Layer**: Clean dependency injection
 
 ### Adding New Rules
@@ -418,7 +418,7 @@ kubectl auth can-i get pods --as=system:serviceaccount:elf-owl-system:elf-owl
 
 ### No violations detected
 
-1. Verify goBPF monitors are running
+1. Verify cilium/ebpf monitors are running (check agent logs for "monitor started")
 2. Check rule definitions in ConfigMap
 3. Enable debug logging: `export OWL_LOG_LEVEL=debug`
 

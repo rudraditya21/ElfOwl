@@ -295,9 +295,26 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 	eventChan := a.ProcessMonitor.EventChan()
 	for {
 		select {
-		case enrichedEvent := <-eventChan:
-			if enrichedEvent == nil {
+		case rawEnriched := <-eventChan:
+			if rawEnriched == nil {
 				continue
+			}
+
+			// ANCHOR: Wire enrichment pipeline for process events - Feb 18, 2026
+			// WHY: Monitors only populate event-specific context (ProcessContext).
+			//      K8s metadata (pod name, namespace, SA, labels) and container
+			//      context are added here by the Enricher via K8s API lookup.
+			// WHAT: Call EnrichProcessEvent with the raw eBPF event to get a fully
+			//       populated EnrichedEvent including K8s and container context.
+			// HOW: Pass rawEvent interface{} to avoid circular imports; enricher
+			//      uses reflection to extract fields from the concrete event struct.
+			enrichedEvent, err := a.Enricher.EnrichProcessEvent(ctx, rawEnriched.RawEvent)
+			if err != nil {
+				a.Logger.Debug("process event enrichment failed, using partial event",
+					zap.Error(err))
+				// Fall back to partially-enriched event from monitor
+				enrichedEvent = rawEnriched
+				a.MetricsRegistry.RecordEnrichmentError()
 			}
 
 			// Run through rule engine
@@ -306,6 +323,7 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 				a.metricsMutex.Lock()
 				a.violationsFound += int64(len(violations))
 				a.metricsMutex.Unlock()
+				a.MetricsRegistry.RecordViolationFound()
 				for _, violation := range violations {
 					a.Logger.Info("CIS violation detected",
 						zap.String("control", violation.ControlID),
@@ -320,6 +338,7 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 			a.metricsMutex.Lock()
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
+			a.MetricsRegistry.RecordEventProcessed()
 
 		case <-a.done:
 			return
@@ -339,9 +358,21 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 	eventChan := a.NetworkMonitor.EventChan()
 	for {
 		select {
-		case enrichedEvent := <-eventChan:
-			if enrichedEvent == nil {
+		case rawEnriched := <-eventChan:
+			if rawEnriched == nil {
 				continue
+			}
+
+			// ANCHOR: Wire enrichment pipeline for network events - Feb 18, 2026
+			// WHY: Network monitor only fills NetworkContext; K8s/container metadata added here.
+			// WHAT: Enrich raw network event with pod metadata and network policy context.
+			// HOW: EnrichNetworkEvent queries K8s API using container ID from /proc cgroup.
+			enrichedEvent, err := a.Enricher.EnrichNetworkEvent(ctx, rawEnriched.RawEvent)
+			if err != nil {
+				a.Logger.Debug("network event enrichment failed, using partial event",
+					zap.Error(err))
+				enrichedEvent = rawEnriched
+				a.MetricsRegistry.RecordEnrichmentError()
 			}
 
 			violations := a.RuleEngine.Match(enrichedEvent)
@@ -349,12 +380,14 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 				a.metricsMutex.Lock()
 				a.violationsFound += int64(len(violations))
 				a.metricsMutex.Unlock()
+				a.MetricsRegistry.RecordViolationFound()
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
 			a.metricsMutex.Lock()
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
+			a.MetricsRegistry.RecordEventProcessed()
 
 		case <-a.done:
 			return
@@ -366,8 +399,8 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 }
 
 // handleDNSEvents handles cilium/ebpf DNS monitor events
-// ANCHOR: DNS event handler now available via cilium/ebpf - Dec 27, 2025
-// DNS monitor fully integrated and operational
+// ANCHOR: DNS event handler with enrichment pipeline - Dec 27, 2025 / Feb 18, 2026
+// DNS monitor fully integrated; K8s context added via enricher.
 func (a *Agent) handleDNSEvents(ctx context.Context) {
 	if a.DNSMonitor == nil {
 		return
@@ -376,9 +409,21 @@ func (a *Agent) handleDNSEvents(ctx context.Context) {
 	eventChan := a.DNSMonitor.EventChan()
 	for {
 		select {
-		case enrichedEvent := <-eventChan:
-			if enrichedEvent == nil {
+		case rawEnriched := <-eventChan:
+			if rawEnriched == nil {
 				continue
+			}
+
+			// ANCHOR: Wire enrichment pipeline for DNS events - Feb 18, 2026
+			// WHY: DNS monitor only fills DNSContext; K8s/container metadata added here.
+			// WHAT: Enrich raw DNS event with pod metadata for compliance correlation.
+			// HOW: EnrichDNSEvent uses container ID from /proc to look up pod in K8s API.
+			enrichedEvent, err := a.Enricher.EnrichDNSEvent(ctx, rawEnriched.RawEvent)
+			if err != nil {
+				a.Logger.Debug("DNS event enrichment failed, using partial event",
+					zap.Error(err))
+				enrichedEvent = rawEnriched
+				a.MetricsRegistry.RecordEnrichmentError()
 			}
 
 			violations := a.RuleEngine.Match(enrichedEvent)
@@ -386,12 +431,14 @@ func (a *Agent) handleDNSEvents(ctx context.Context) {
 				a.metricsMutex.Lock()
 				a.violationsFound += int64(len(violations))
 				a.metricsMutex.Unlock()
+				a.MetricsRegistry.RecordViolationFound()
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
 			a.metricsMutex.Lock()
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
+			a.MetricsRegistry.RecordEventProcessed()
 
 		case <-a.done:
 			return
@@ -411,9 +458,21 @@ func (a *Agent) handleFileEvents(ctx context.Context) {
 	eventChan := a.FileMonitor.EventChan()
 	for {
 		select {
-		case enrichedEvent := <-eventChan:
-			if enrichedEvent == nil {
+		case rawEnriched := <-eventChan:
+			if rawEnriched == nil {
 				continue
+			}
+
+			// ANCHOR: Wire enrichment pipeline for file events - Feb 18, 2026
+			// WHY: File monitor only fills FileContext; K8s/container metadata added here.
+			// WHAT: Enrich raw file event with pod metadata and read-only FS check.
+			// HOW: EnrichFileEvent checks container security context for ReadOnlyFilesystem.
+			enrichedEvent, err := a.Enricher.EnrichFileEvent(ctx, rawEnriched.RawEvent)
+			if err != nil {
+				a.Logger.Debug("file event enrichment failed, using partial event",
+					zap.Error(err))
+				enrichedEvent = rawEnriched
+				a.MetricsRegistry.RecordEnrichmentError()
 			}
 
 			violations := a.RuleEngine.Match(enrichedEvent)
@@ -421,12 +480,14 @@ func (a *Agent) handleFileEvents(ctx context.Context) {
 				a.metricsMutex.Lock()
 				a.violationsFound += int64(len(violations))
 				a.metricsMutex.Unlock()
+				a.MetricsRegistry.RecordViolationFound()
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
 			a.metricsMutex.Lock()
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
+			a.MetricsRegistry.RecordEventProcessed()
 
 		case <-a.done:
 			return
@@ -446,9 +507,21 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 	eventChan := a.CapabilityMonitor.EventChan()
 	for {
 		select {
-		case enrichedEvent := <-eventChan:
-			if enrichedEvent == nil {
+		case rawEnriched := <-eventChan:
+			if rawEnriched == nil {
 				continue
+			}
+
+			// ANCHOR: Wire enrichment pipeline for capability events - Feb 18, 2026
+			// WHY: Capability monitor only fills CapabilityContext; K8s context added here.
+			// WHAT: Enrich raw capability event with pod metadata and privilege escalation check.
+			// HOW: EnrichCapabilityEvent maps raw capability ID to Linux capability name.
+			enrichedEvent, err := a.Enricher.EnrichCapabilityEvent(ctx, rawEnriched.RawEvent)
+			if err != nil {
+				a.Logger.Debug("capability event enrichment failed, using partial event",
+					zap.Error(err))
+				enrichedEvent = rawEnriched
+				a.MetricsRegistry.RecordEnrichmentError()
 			}
 
 			violations := a.RuleEngine.Match(enrichedEvent)
@@ -456,12 +529,14 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 				a.metricsMutex.Lock()
 				a.violationsFound += int64(len(violations))
 				a.metricsMutex.Unlock()
+				a.MetricsRegistry.RecordViolationFound()
 			}
 
 			a.EventBuffer.Enqueue(enrichedEvent, violations)
 			a.metricsMutex.Lock()
 			a.eventsProcessed++
 			a.metricsMutex.Unlock()
+			a.MetricsRegistry.RecordEventProcessed()
 
 		case <-a.done:
 			return
@@ -526,6 +601,11 @@ func (a *Agent) collectMetrics(ctx context.Context) {
 			processed := a.eventsProcessed
 			violations := a.violationsFound
 			a.metricsMutex.Unlock()
+
+			// ANCHOR: Sync buffer gauge to Prometheus - Feb 18, 2026
+			// WHY: Prometheus gauge needs periodic refresh since buffer count changes continuously.
+			// WHAT: Update eventsBuffered gauge with current buffer count.
+			a.MetricsRegistry.SetEventsBuffered(a.EventBuffer.Count())
 
 			a.Logger.Debug("metrics",
 				zap.Int64("events_processed", processed),

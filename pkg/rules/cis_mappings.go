@@ -66,11 +66,16 @@ var CISControls = []*Rule{
 	},
 
 	// CIS 4.5.5: Ensure the filesystem is read-only where possible
+	// ANCHOR: Fix event type mismatch file_write->file_access - Feb 18, 2026
+	// WHY: FileMonitor emits event_type "file_access", not "file_write". Using the
+	//      wrong type meant this rule never fired against real eBPF events.
+	// WHAT: Changed EventTypes from "file_write" to "file_access" to match the
+	//       event_type string set in file_monitor.go eventLoop.
 	{
 		ControlID:  "CIS_4.5.5",
 		Title:      "Ensure the filesystem is read-only where possible",
 		Severity:   "MEDIUM",
-		EventTypes: []string{"file_write"},
+		EventTypes: []string{"file_access"},
 		Conditions: []Condition{
 			{
 				Field:    "file.path",
@@ -99,11 +104,17 @@ var CISControls = []*Rule{
 	},
 
 	// CIS 4.6.1: Ensure default deny NetworkPolicy is in place
+	// ANCHOR: Add network_connection alongside network_policy_check - Feb 18, 2026
+	// WHY: No monitor emits "network_policy_check" as an event type; that was a
+	//      placeholder for a future K8s API polling path. However, the enricher
+	//      already sets kubernetes.has_default_deny_network_policy on every
+	//      network_connection event. Including "network_connection" lets this rule
+	//      fire against real eBPF events without removing the future polling path.
 	{
 		ControlID:  "CIS_4.6.1",
 		Title:      "Ensure default deny NetworkPolicy is in place",
 		Severity:   "HIGH",
-		EventTypes: []string{"network_policy_check"},
+		EventTypes: []string{"network_connection", "network_policy_check"},
 		Conditions: []Condition{
 			{
 				Field:    "kubernetes.has_default_deny_policy",
@@ -655,11 +666,13 @@ var CISControls = []*Rule{
 	},
 
 	// CIS 4.8.1: Enforce read-only root filesystem
+	// ANCHOR: Fix event type mismatch file_write->file_access - Feb 18, 2026
+	// WHY: Same mismatch as CIS_4.5.5; file monitor emits "file_access" not "file_write".
 	{
 		ControlID:  "CIS_4.8.1",
 		Title:      "Ensure container filesystem is read-only",
 		Severity:   "HIGH",
-		EventTypes: []string{"file_write"},
+		EventTypes: []string{"file_access"},
 		Conditions: []Condition{
 			{
 				Field:    "container.read_only_filesystem",

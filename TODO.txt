@@ -1,0 +1,44 @@
+Missing: 2026-02-18
+Heres whats missing or still not meeting the README requirements after a deep dive. Im calling out concrete gaps and the files where they show up.
+
+Core Runtime Gaps
+
+eBPF loading is stubbed: programs are never actually loaded/attached and readers return not implemented. loader.go.
+Monitors run with empty ProgramSet placeholders, so no kernel events are ever produced. agent.go, *_monitor.go.
+eBPF C programs are still TODO (likely no real probes); even if .o files exist, sources show missing logic. *.c.
+Enrichment + Rules Gaps
+
+Enrichment pipeline isnt used: the agent never calls Enricher, so K8s metadata/container context/network policy enrichment never happens in the live pipeline. agent.go, enricher.go.
+Rule event-type mismatch: rules expect pod_spec_check, network_policy_check, and file_write, but no code emits these event types. cis_mappings.go, *_monitor.go.
+Many rule fields are never populated or default to zero values, causing false positives or nondetections. Examples:
+kubernetes.has_default_deny_network_policy never set. types.go, enricher.go.
+kubernetes.audit_logging_enabled never set. types.go, enricher.go.
+container.runtime, image_scan_status, image_registry_auth, image_signed, storage_request, volume_type, isolation_level, kernel_hardening never populated. types.go, enricher.go, client.go.
+Network context Direction, ConnectionState, NetworkNamespaceID never set. types.go, enricher.go.
+Evidence + API Push Gaps
+
+Push client is a stub: no event serialization, signing, encryption, gzip, auth headers, or TLS configuration. client.go.
+Evidence payload format isnt implemented; signer/cipher exist but are not wired into any payload flow. *.go, client.go.
+Observability/Operations Gaps
+
+Health and metrics endpoints are configured but never served (no HTTP server wiring). config.go, agent.go, main.go.
+Prometheus metrics registry exists but is not hooked into the pipeline. prometheus.go, agent.go.
+Deployment Gaps
+
+Helm templates are empty and Kustomize base/overlays have no manifests, so DaemonSet/RBAC/ConfigMap deployment is missing. deploy/helm/templates/, deploy/kustomize/.
+K8s Metadata Gaps
+
+Owner references are explicitly TODO and never populated. client.go.
+Config/Docs Mismatch
+
+README still claims goBPF integration, while code is cilium/ebpf; comments in code still reference goBPF. README.md, main.go.
+
+
+Suggested next steps:
+
+Wire the enrichment pipeline into the agent and fix eventtype mismatches so rules can actually fire.
+Implement eBPF loader + readers and hook monitors to real kernel events.
+Implement the API push payload (sign/encrypt/compress/JWT/TLS).
+Add health/metrics HTTP servers and wire Prometheus counters.
+Build Helm/Kustomize deployment manifests.
+

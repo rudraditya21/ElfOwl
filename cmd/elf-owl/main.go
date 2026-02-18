@@ -1,18 +1,23 @@
-// ANCHOR: elf-owl agent entry point - Dec 26, 2025
-// Starts the minimal compliance observer agent with direct goBPF integration
-// Reads configuration from YAML and environment variables
-// Initializes all components and runs the event processing pipeline
+// ANCHOR: elf-owl agent entry point - Dec 26, 2025 / Feb 18, 2026
+// Starts the compliance observer agent with cilium/ebpf integration.
+// Reads configuration from YAML and environment variables.
+// Initializes all components and runs the event processing pipeline.
+// Serves /healthz (JSON health status) and /metrics (Prometheus) HTTP endpoints.
 
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
+
 	"github.com/udyansh/elf-owl/pkg/agent"
 	"github.com/udyansh/elf-owl/pkg/logger"
 )
@@ -71,6 +76,67 @@ func main() {
 		zap.String("endpoint", config.Agent.OWL.Endpoint),
 		zap.Int("batchSize", config.Agent.OWL.Push.BatchSize),
 	)
+
+	// ANCHOR: Health HTTP server - Feb 18, 2026
+	// WHY: HealthStatus was computed in-memory but never exposed; Kubernetes liveness
+	//      and readiness probes, as well as operators, need an HTTP endpoint.
+	// WHAT: Serve GET /healthz returning JSON-encoded agent.HealthStatus.
+	// HOW: Spin up a dedicated net/http server on the configured listen address
+	//      (default :8081) so it is independent of the main event loop.
+	if config.Agent.Health.Enabled {
+		healthAddr := config.Agent.Health.ListenAddress
+		if healthAddr == "" {
+			healthAddr = ":8081"
+		}
+		healthPath := config.Agent.Health.Path
+		if healthPath == "" {
+			healthPath = "/healthz"
+		}
+
+		healthMux := http.NewServeMux()
+		healthMux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) {
+			status := agentInstance.Health()
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(status); err != nil {
+				http.Error(w, "encode error", http.StatusInternalServerError)
+			}
+		})
+
+		go func() {
+			zapLogger.Info("health server listening", zap.String("addr", healthAddr+healthPath))
+			if err := http.ListenAndServe(healthAddr, healthMux); err != nil && err != http.ErrServerClosed {
+				zapLogger.Error("health server error", zap.Error(err))
+			}
+		}()
+	}
+
+	// ANCHOR: Prometheus metrics HTTP server - Feb 18, 2026
+	// WHY: MetricsRegistry counters were incremented but never scraped; no HTTP
+	//      server was wired to expose the /metrics endpoint for Prometheus.
+	// WHAT: Serve GET /metrics using the standard promhttp.Handler() which reads
+	//       from the global Prometheus registry (promauto registers there by default).
+	// HOW: Dedicated net/http server on configured address (default :8080) so
+	//      metric scraping is isolated from agent event processing.
+	if config.Agent.Metrics.Enabled {
+		metricsAddr := config.Agent.Metrics.ListenAddress
+		if metricsAddr == "" {
+			metricsAddr = ":8080"
+		}
+		metricsPath := config.Agent.Metrics.Path
+		if metricsPath == "" {
+			metricsPath = "/metrics"
+		}
+
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle(metricsPath, promhttp.Handler())
+
+		go func() {
+			zapLogger.Info("metrics server listening", zap.String("addr", metricsAddr+metricsPath))
+			if err := http.ListenAndServe(metricsAddr, metricsMux); err != nil && err != http.ErrServerClosed {
+				zapLogger.Error("metrics server error", zap.Error(err))
+			}
+		}()
+	}
 
 	// Wait for shutdown signal
 	sig := <-sigChan

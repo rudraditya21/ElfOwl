@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: elf-owl
+  namespace: elf-owl-system
+  labels:
+    app: elf-owl
+spec:
+  selector:
+    matchLabels:
+      app: elf-owl
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: elf-owl
+    spec:
+      serviceAccountName: elf-owl
+      hostPID: true
+      hostNetwork: false
+
+      tolerations:
+        - operator: Exists
+
+      containers:
+        - name: elf-owl
+          image: elf-owl:0.1.0
+          imagePullPolicy: IfNotPresent
+
+          securityContext:
+            privileged: false
+            capabilities:
+              add:
+                - SYS_ADMIN
+                - SYS_RESOURCE
+                - SYS_PTRACE
+              drop:
+                - NET_RAW
+
+          env:
+            - name: OWL_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OWL_JWT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: elf-owl-api-token
+                  key: api-token
+
+          ports:
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+            - name: health
+              containerPort: 9091
+              protocol: TCP
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9091
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/elf-owl
+              readOnly: true
+            - name: debugfs
+              mountPath: /sys/kernel/debug
+              readOnly: true
+            - name: proc
+              mountPath: /proc
+              readOnly: true
+
+      volumes:
+        - name: config
+          configMap:
+            name: elf-owl-config
+        - name: debugfs
+          hostPath:
+            path: /sys/kernel/debug
+            type: DirectoryOrCreate
+        - name: proc
+          hostPath:
+            path: /proc
+            type: Directory
