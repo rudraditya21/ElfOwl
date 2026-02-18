@@ -124,11 +124,13 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 		}
 	}
 
+	containerName := ""
+
 	// AppArmor profile from pod annotations
 	// ANCHOR: Extract AppArmor profile with container name in annotation key - Phase 2.2 fix, Dec 26, 2025
 	// K8s annotation key includes container name suffix, e.g. container.apparmor.security.beta.kubernetes.io/{container_name}
 	if pod.Annotations != nil && len(pod.Spec.Containers) > 0 {
-		containerName := pod.Spec.Containers[0].Name
+		containerName = pod.Spec.Containers[0].Name
 		apparmorProfile = pod.Annotations["container.apparmor.security.beta.kubernetes.io/"+containerName]
 	}
 
@@ -137,6 +139,7 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 	// Container-level security context takes precedence over pod-level for runAsNonRoot
 	if len(pod.Spec.Containers) > 0 {
 		container := pod.Spec.Containers[0]
+		containerName = container.Name
 		if container.SecurityContext != nil {
 			if container.SecurityContext.AllowPrivilegeEscalation != nil {
 				allowPrivilegeEscalation = *container.SecurityContext.AllowPrivilegeEscalation
@@ -180,33 +183,34 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 
 	// Create PodMetadata with extracted security context
 	metadata := &PodMetadata{
-		Name:                         pod.Name,
-		Namespace:                    pod.Namespace,
-		UID:                          string(pod.UID),
-		ServiceAccount:               pod.Spec.ServiceAccountName,
-		Image:                        image,
-		ImageRegistry:                "", // Will be parsed by enricher
-		ImageTag:                     "", // Will be parsed by enricher
-		Labels:                       pod.Labels,
-		OwnerRef:                     nil, // TODO: Phase 2.3 - extract owner references from pod
-		RunAsUser:                    runAsUser,
-		RunAsNonRoot:                 runAsNonRoot,
-		FSGroup:                      fsGroup,
-		SeccompProfile:               seccompProfile,
-		SELinuxLevel:                 selinuxLevel,
-		AppArmorProfile:              apparmorProfile,
-		AllowPrivilegeEscalation:     allowPrivilegeEscalation,
-		Privileged:                   privileged,
-		ReadOnlyRootFilesystem:       readOnlyRootFilesystem,
-		RunAsRootContainer:           runAsRootContainer,
-		HostNetwork:                  pod.Spec.HostNetwork,
-		HostIPC:                      pod.Spec.HostIPC,
-		HostPID:                      pod.Spec.HostPID,
-		MemoryLimit:                  memoryLimit,
-		MemoryRequest:                memoryRequest,
-		CPULimit:                     cpuLimit,
-		CPURequest:                   cpuRequest,
-		ImagePullPolicy:              imagePullPolicy,
+		Name:                     pod.Name,
+		Namespace:                pod.Namespace,
+		UID:                      string(pod.UID),
+		ServiceAccount:           pod.Spec.ServiceAccountName,
+		Image:                    image,
+		ImageRegistry:            "", // Will be parsed by enricher
+		ImageTag:                 "", // Will be parsed by enricher
+		Labels:                   pod.Labels,
+		OwnerRef:                 nil, // TODO: Phase 2.3 - extract owner references from pod
+		ContainerName:            containerName,
+		RunAsUser:                runAsUser,
+		RunAsNonRoot:             runAsNonRoot,
+		FSGroup:                  fsGroup,
+		SeccompProfile:           seccompProfile,
+		SELinuxLevel:             selinuxLevel,
+		AppArmorProfile:          apparmorProfile,
+		AllowPrivilegeEscalation: allowPrivilegeEscalation,
+		Privileged:               privileged,
+		ReadOnlyRootFilesystem:   readOnlyRootFilesystem,
+		RunAsRootContainer:       runAsRootContainer,
+		HostNetwork:              pod.Spec.HostNetwork,
+		HostIPC:                  pod.Spec.HostIPC,
+		HostPID:                  pod.Spec.HostPID,
+		MemoryLimit:              memoryLimit,
+		MemoryRequest:            memoryRequest,
+		CPULimit:                 cpuLimit,
+		CPURequest:               cpuRequest,
+		ImagePullPolicy:          imagePullPolicy,
 	}
 
 	// Store in cache
@@ -360,8 +364,8 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 	}
 
 	metadata := &ServiceAccountMetadata{
-		Name:                      sa.Name,
-		Namespace:                 sa.Namespace,
+		Name:                         sa.Name,
+		Namespace:                    sa.Namespace,
 		AutomountServiceAccountToken: true, // K8s default when not specified
 	}
 
@@ -689,36 +693,37 @@ type PodMetadata struct {
 	ImageTag       string
 	Labels         map[string]string
 	OwnerRef       *OwnerReference
+	ContainerName  string
 
 	// ANCHOR: Security context fields extracted from pod spec - Phase 2.2 fix, Dec 26, 2025
 	// These fields are populated by extracting values from pod.Spec security context
 	// They override the defaults in enricher's containerCtx when available
 
 	// Pod-level security context
-	RunAsUser                    int64
-	RunAsNonRoot                 bool
-	FSGroup                      int64
-	SeccompProfile               string
-	SELinuxLevel                 string
-	AppArmorProfile              string
+	RunAsUser       int64
+	RunAsNonRoot    bool
+	FSGroup         int64
+	SeccompProfile  string
+	SELinuxLevel    string
+	AppArmorProfile string
 
 	// Container-level security context (from first container)
-	AllowPrivilegeEscalation     bool
-	Privileged                   bool
-	ReadOnlyRootFilesystem       bool
-	RunAsRootContainer           bool
-	HostNetwork                  bool
-	HostIPC                      bool
-	HostPID                      bool
+	AllowPrivilegeEscalation bool
+	Privileged               bool
+	ReadOnlyRootFilesystem   bool
+	RunAsRootContainer       bool
+	HostNetwork              bool
+	HostIPC                  bool
+	HostPID                  bool
 
 	// Resource requests and limits (from first container)
-	MemoryLimit                  string
-	MemoryRequest                string
-	CPULimit                     string
-	CPURequest                   string
+	MemoryLimit   string
+	MemoryRequest string
+	CPULimit      string
+	CPURequest    string
 
 	// Image pull policy (from first container)
-	ImagePullPolicy              string
+	ImagePullPolicy string
 }
 
 type OwnerReference struct {

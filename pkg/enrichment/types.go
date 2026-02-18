@@ -38,27 +38,27 @@ type EnrichedEvent struct {
 
 // K8sContext contains Kubernetes metadata
 type K8sContext struct {
-	ClusterID                   string            `json:"cluster_id"`
-	NodeName                    string            `json:"node_name"`
-	Namespace                   string            `json:"namespace"`
-	PodName                     string            `json:"pod_name"`
-	PodUID                      string            `json:"pod_uid"`
-	ServiceAccount              string            `json:"service_account"`
-	Image                       string            `json:"image"`
-	ImageRegistry               string            `json:"image_registry"`
-	ImageTag                    string            `json:"image_tag"`
-	Labels                      map[string]string `json:"labels"`
-	OwnerRef                    *OwnerReference   `json:"owner_ref"`
-	AutomountServiceAccountToken bool             `json:"automount_service_account_token"`
-	HasDefaultDenyNetworkPolicy  bool             `json:"has_default_deny_network_policy"`
+	ClusterID                    string            `json:"cluster_id"`
+	NodeName                     string            `json:"node_name"`
+	Namespace                    string            `json:"namespace"`
+	PodName                      string            `json:"pod_name"`
+	PodUID                       string            `json:"pod_uid"`
+	ServiceAccount               string            `json:"service_account"`
+	Image                        string            `json:"image"`
+	ImageRegistry                string            `json:"image_registry"`
+	ImageTag                     string            `json:"image_tag"`
+	Labels                       map[string]string `json:"labels"`
+	OwnerRef                     *OwnerReference   `json:"owner_ref"`
+	AutomountServiceAccountToken bool              `json:"automount_service_account_token"`
+	HasDefaultDenyNetworkPolicy  bool              `json:"has_default_deny_network_policy"`
 	// ANCHOR: Extended K8s fields for Phase 1 RBAC controls - Dec 26, 2025
-	RBACEnforced                bool   `json:"rbac_enforced"`
-	RBACLevel                   int    `json:"rbac_level"`
-	ServiceAccountTokenAge      int64  `json:"service_account_token_age"`
-	ServiceAccountPermissions   int    `json:"service_account_permissions"`
-	RBACPolicyDefined           bool   `json:"rbac_policy_defined"`
-	RolePermissionCount         int    `json:"role_permission_count"`
-	AuditLoggingEnabled         bool   `json:"audit_logging_enabled"`
+	RBACEnforced              bool  `json:"rbac_enforced"`
+	RBACLevel                 int   `json:"rbac_level"`
+	ServiceAccountTokenAge    int64 `json:"service_account_token_age"`
+	ServiceAccountPermissions int   `json:"service_account_permissions"`
+	RBACPolicyDefined         bool  `json:"rbac_policy_defined"`
+	RolePermissionCount       int   `json:"role_permission_count"`
+	AuditLoggingEnabled       bool  `json:"audit_logging_enabled"`
 }
 
 // OwnerReference identifies the owner of a pod
@@ -100,13 +100,17 @@ type ContainerContext struct {
 }
 
 // ProcessContext captures process metadata from goBPF events
+// ANCHOR: Process context extensions - Feature: parent PID + arguments - Jan 2026
+// Adds parent PID and argument list for richer forensic context.
 type ProcessContext struct {
-	PID         uint32 `json:"pid"`
-	UID         uint32 `json:"uid"`
-	GID         uint32 `json:"gid"`
-	Command     string `json:"command"`
-	Filename    string `json:"filename"`
-	ContainerID string `json:"container_id"`
+	PID         uint32   `json:"pid"`
+	ParentPID   uint32   `json:"parent_pid"`
+	UID         uint32   `json:"uid"`
+	GID         uint32   `json:"gid"`
+	Command     string   `json:"command"`
+	Arguments   []string `json:"arguments"`
+	Filename    string   `json:"filename"`
+	ContainerID string   `json:"container_id"`
 }
 
 // FileContext captures file metadata from goBPF events
@@ -137,24 +141,24 @@ type NodeMetadata = kubernetes.NodeMetadata
 
 // NetworkContext captures network metadata from goBPF events
 type NetworkContext struct {
-	SourceIP              string `json:"source_ip"`
-	DestinationIP         string `json:"destination_ip"`
-	SourcePort            uint16 `json:"source_port"`
-	DestinationPort       uint16 `json:"destination_port"`
-	Protocol              string `json:"protocol"`
-	Direction             string `json:"direction"` // inbound, outbound
-	ConnectionState       string `json:"connection_state"`
-	NetworkNamespaceID    uint32 `json:"network_namespace_id"`
-	IngressRestricted     bool   `json:"ingress_restricted"`
-	EgressRestricted      bool   `json:"egress_restricted"`
-	NamespaceIsolation    bool   `json:"namespace_isolation"`
+	SourceIP           string `json:"source_ip"`
+	DestinationIP      string `json:"destination_ip"`
+	SourcePort         uint16 `json:"source_port"`
+	DestinationPort    uint16 `json:"destination_port"`
+	Protocol           string `json:"protocol"`
+	Direction          string `json:"direction"` // inbound, outbound
+	ConnectionState    string `json:"connection_state"`
+	NetworkNamespaceID uint32 `json:"network_namespace_id"`
+	IngressRestricted  bool   `json:"ingress_restricted"`
+	EgressRestricted   bool   `json:"egress_restricted"`
+	NamespaceIsolation bool   `json:"namespace_isolation"`
 }
 
 // DNSContext captures DNS query metadata from goBPF events
 type DNSContext struct {
-	QueryName        string `json:"query_name"`
-	QueryType        string `json:"query_type"` // A, AAAA, MX, etc.
-	ResponseCode     int    `json:"response_code"`
-	QueryAllowed     bool   `json:"query_allowed"`
-	AllowedDomains   []string `json:"allowed_domains"`
+	QueryName      string   `json:"query_name"`
+	QueryType      string   `json:"query_type"` // A, AAAA, MX, etc.
+	ResponseCode   int      `json:"response_code"`
+	QueryAllowed   bool     `json:"query_allowed"`
+	AllowedDomains []string `json:"allowed_domains"`
 }

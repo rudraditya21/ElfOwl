@@ -8,7 +8,10 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,33 +51,33 @@ func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string) (*Enr
 
 // ANCHOR: Reflection helpers for eBPF events - Phase 3 debugging support - Jan 2026
 var dnsQueryTypeNames = map[uint16]string{
-	1:  "A",
-	2:  "NS",
-	5:  "CNAME",
-	6:  "SOA",
-	12: "PTR",
-	15: "MX",
-	16: "TXT",
-	28: "AAAA",
-	33: "SRV",
-	42: "NAPTR",
-	43: "DS",
-	48: "DNSKEY",
-	255:"ANY",
+	1:   "A",
+	2:   "NS",
+	5:   "CNAME",
+	6:   "SOA",
+	12:  "PTR",
+	15:  "MX",
+	16:  "TXT",
+	28:  "AAAA",
+	33:  "SRV",
+	42:  "NAPTR",
+	43:  "DS",
+	48:  "DNSKEY",
+	255: "ANY",
 }
 
 var dnsResponseCodeNames = map[uint8]string{
-	0: "NOERROR",
-	1: "FORMERR",
-	2: "SERVFAIL",
-	3: "NXDOMAIN",
-	4: "NOTIMP",
-	5: "REFUSED",
-	6: "YXDOMAIN",
-	7: "YXRRSET",
-	8: "NXRRSET",
-	9: "NOTAUTH",
-	10:"NOTZONE",
+	0:  "NOERROR",
+	1:  "FORMERR",
+	2:  "SERVFAIL",
+	3:  "NXDOMAIN",
+	4:  "NOTIMP",
+	5:  "REFUSED",
+	6:  "YXDOMAIN",
+	7:  "YXRRSET",
+	8:  "NXRRSET",
+	9:  "NOTAUTH",
+	10: "NOTZONE",
 }
 
 var capabilityNames = map[uint32]string{
@@ -224,6 +227,89 @@ func capabilityNameFromID(id uint32) string {
 	return fmt.Sprintf("CAP_UNKNOWN_%d", id)
 }
 
+// ANCHOR: Proc-based enrichment fallback - Feature: parent/args/container - Jan 2026
+// Uses /proc to recover process args, parent PID, and container ID when eBPF events omit them.
+func procCmdline(pid uint32) []string {
+	if pid == 0 {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "cmdline"))
+	if err != nil || len(data) == 0 {
+		return nil
+	}
+	parts := strings.Split(string(data), "\x00")
+	args := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		args = append(args, part)
+	}
+	return args
+}
+
+func procParentPID(pid uint32) uint32 {
+	if pid == 0 {
+		return 0
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "stat"))
+	if err != nil {
+		return 0
+	}
+	// /proc/<pid>/stat: pid (comm) state ppid ...
+	// We need the field after the closing ')'.
+	stat := string(data)
+	closeIdx := strings.LastIndex(stat, ")")
+	if closeIdx == -1 || closeIdx+2 >= len(stat) {
+		return 0
+	}
+	fields := strings.Fields(stat[closeIdx+2:])
+	if len(fields) < 2 {
+		return 0
+	}
+	ppid, err := strconv.ParseUint(fields[1], 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(ppid)
+}
+
+func procContainerID(pid uint32) string {
+	if pid == 0 {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "cgroup"))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 3)
+		if len(parts) != 3 {
+			continue
+		}
+		path := parts[2]
+		segments := strings.Split(path, "/")
+		for i := len(segments) - 1; i >= 0; i-- {
+			seg := segments[i]
+			if seg == "" {
+				continue
+			}
+			// Trim common prefixes
+			seg = strings.TrimPrefix(seg, "docker-")
+			seg = strings.TrimSuffix(seg, ".scope")
+			// Container IDs are typically 64-hex chars; accept 32+ as fallback.
+			if len(seg) >= 32 {
+				return seg
+			}
+		}
+	}
+	return ""
+}
+
 // ANCHOR: Helper methods for enrichment field extraction - Phase 2, Dec 26, 2025
 // These methods query K8s API and parse pod specs to populate enrichment fields
 
@@ -329,9 +415,20 @@ func (e *Enricher) EnrichProcessEvent(
 		cmdVal = fieldStringValue(v, "Filename")
 	}
 	fnVal := fieldStringValue(v, "Filename")
+	argsVal := strings.Fields(cmdVal)
+	if len(argsVal) == 0 {
+		argsVal = procCmdline(pidVal)
+	}
+	parentPID := procParentPID(pidVal)
+	containerID := procContainerID(pidVal)
+
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+		RunAsRoot:   false, // Will be set below based on podMeta or eBPF UID
+	}
 
 	// Get pod metadata from K8s API (returns nil if not available)
-	podMeta := e.getPodMetadata(ctx, "")
+	podMeta := e.getPodMetadata(ctx, containerID)
 
 	// Build Kubernetes context with available metadata
 	k8sCtx := &K8sContext{
@@ -349,6 +446,7 @@ func (e *Enricher) EnrichProcessEvent(
 		k8sCtx.ImageRegistry = e.parseImageRegistry(podMeta.Image)
 		k8sCtx.ImageTag = e.parseImageTag(podMeta.Image)
 		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
 
 		// ANCHOR: Extract RBAC context from ServiceAccount and Role bindings - Phase 2.3, Dec 26, 2025
 		// Query RBAC metadata only if K8s client is available and service account is set
@@ -377,10 +475,6 @@ func (e *Enricher) EnrichProcessEvent(
 	// Build container context with security context from pod spec or defaults
 	// ANCHOR: Extract security context from pod metadata - Phase 2.2 fix, Dec 26, 2025
 	// Use pod spec security context values if available, otherwise fall back to defaults
-	containerCtx := &ContainerContext{
-		RunAsRoot: false, // Will be set below based on podMeta or eBPF UID
-	}
-
 	// Apply pod security context
 	if podMeta != nil {
 		// Pod-level security context
@@ -409,7 +503,7 @@ func (e *Enricher) EnrichProcessEvent(
 	} else {
 		// Fallback to defaults when pod metadata not available
 		containerCtx.RunAsRoot = uidVal == 0
-		containerCtx.AllowPrivilegeEscalation = true  // Default to true (least restrictive)
+		containerCtx.AllowPrivilegeEscalation = true // Default to true (least restrictive)
 		containerCtx.Privileged = false
 		containerCtx.ReadOnlyFilesystem = false
 		containerCtx.HostNetwork = false
@@ -426,17 +520,20 @@ func (e *Enricher) EnrichProcessEvent(
 	}
 
 	return &EnrichedEvent{
-		RawEvent:  rawEvent,
-		EventType: "process_execution",
-		Timestamp: time.Now(),
+		RawEvent:   rawEvent,
+		EventType:  "process_execution",
+		Timestamp:  time.Now(),
 		Kubernetes: k8sCtx,
-		Container: containerCtx,
+		Container:  containerCtx,
 		Process: &ProcessContext{
-			PID:      uint32(pidVal),
-			UID:      uint32(uidVal),
-			GID:      uint32(gidVal),
-			Command:  cmdVal,
-			Filename: fnVal,
+			PID:         uint32(pidVal),
+			ParentPID:   parentPID,
+			UID:         uint32(uidVal),
+			GID:         uint32(gidVal),
+			Command:     cmdVal,
+			Arguments:   argsVal,
+			Filename:    fnVal,
+			ContainerID: containerID,
 		},
 	}, nil
 }
@@ -594,21 +691,21 @@ func (e *Enricher) EnrichFileEvent(
 
 	// Build container context with security defaults
 	containerCtx := &ContainerContext{
-		RunAsRoot:               uidVal == 0,
-		ReadOnlyFilesystem:      false, // Default to false (writable)
-		MemoryLimit:             "",    // No limit by default
-		CPULimit:                "",    // No limit by default
-		MemoryRequest:           "",    // No request by default
-		CPURequest:              "",    // No request by default
+		RunAsRoot:                uidVal == 0,
+		ReadOnlyFilesystem:       false, // Default to false (writable)
+		MemoryLimit:              "",    // No limit by default
+		CPULimit:                 "",    // No limit by default
+		MemoryRequest:            "",    // No request by default
+		CPURequest:               "",    // No request by default
 		AllowPrivilegeEscalation: true,  // Default to true
 	}
 
 	return &EnrichedEvent{
-		RawEvent:  rawEvent,
-		EventType: "file_access",
-		Timestamp: time.Now(),
+		RawEvent:   rawEvent,
+		EventType:  "file_access",
+		Timestamp:  time.Now(),
 		Kubernetes: k8sCtx,
-		Container: containerCtx,
+		Container:  containerCtx,
 		Process: &ProcessContext{
 			PID:     pidVal,
 			UID:     uidVal,
@@ -663,11 +760,11 @@ func (e *Enricher) EnrichCapabilityEvent(
 	}
 
 	return &EnrichedEvent{
-		RawEvent:  rawEvent,
-		EventType: "capability_usage",
-		Timestamp: time.Now(),
+		RawEvent:   rawEvent,
+		EventType:  "capability_usage",
+		Timestamp:  time.Now(),
 		Kubernetes: k8sCtx,
-		Container: containerCtx,
+		Container:  containerCtx,
 		Process: &ProcessContext{
 			PID:     pidVal,
 			UID:     uidVal,
