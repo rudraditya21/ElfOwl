@@ -560,9 +560,33 @@ func (e *Enricher) EnrichNetworkEvent(
 	destPortVal := uint16(fieldUintValue(v, "DPort"))
 	protocolVal := protocolName(fieldUintValue(v, "Protocol"))
 
-	// NetworkEvent doesn't include container ID, so we can't query pod metadata
-	// This will be enhanced in Phase 3 when container ID mapping is available
-	var podMeta *PodMetadata
+	// ANCHOR: Container context propagation - Feature: PID-based container lookup - Jan 2026
+	// Resolve container metadata from PID when available
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -577,6 +601,37 @@ func (e *Enricher) EnrichNetworkEvent(
 		k8sCtx.ServiceAccount = podMeta.ServiceAccount
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
 	}
 
 	// Build network context with policy evaluation
@@ -611,7 +666,7 @@ func (e *Enricher) EnrichNetworkEvent(
 		EventType:  "network_connection",
 		Timestamp:  time.Now(),
 		Kubernetes: k8sCtx,
-		Container:  &ContainerContext{},
+		Container:  containerCtx,
 		Network:    networkCtx,
 	}, nil
 }
@@ -637,10 +692,59 @@ func (e *Enricher) EnrichDNSEvent(
 	respCodeVal := int(fieldUintValue(v, "ResponseCode"))
 	queryAllowed := fieldUintValue(v, "QueryAllowed") == 1
 
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
 		ClusterID: e.ClusterID,
 		NodeName:  e.NodeName,
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
 	}
 
 	// Build DNS context with query and response information
@@ -656,7 +760,7 @@ func (e *Enricher) EnrichDNSEvent(
 		EventType:  "dns_query",
 		Timestamp:  time.Now(),
 		Kubernetes: k8sCtx,
-		Container:  &ContainerContext{},
+		Container:  containerCtx,
 		DNS:        dnsCtx,
 	}, nil
 }
@@ -683,10 +787,59 @@ func (e *Enricher) EnrichFileEvent(
 	opVal := fileOperationName(fieldUintValue(v, "Operation"))
 	cmdVal := fieldStringValue(v, "Filename")
 
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
 		ClusterID: e.ClusterID,
 		NodeName:  e.NodeName,
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
 	}
 
 	// Build container context with security defaults
@@ -746,18 +899,65 @@ func (e *Enricher) EnrichCapabilityEvent(
 	allowedVal := fieldUintValue(v, "CheckType") != 2
 	nameVal := capabilityNameFromID(capabilityID)
 
+	pidVal := uint32(fieldUintValue(v, "PID"))
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
+	containerID := procContainerID(pidVal)
+	containerCtx := &ContainerContext{
+		ContainerID: containerID,
+	}
+	podMeta := e.getPodMetadata(ctx, containerID)
+
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
 		ClusterID: e.ClusterID,
 		NodeName:  e.NodeName,
 	}
 
-	// Build container context with capability defaults
-	containerCtx := &ContainerContext{
-		RunAsRoot:                uidVal == 0,
-		AllowPrivilegeEscalation: true,  // Default to true (least restrictive)
-		Privileged:               false, // Default to false
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
 	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	if podMeta != nil {
+		k8sCtx.Namespace = podMeta.Namespace
+		k8sCtx.PodName = podMeta.Name
+		k8sCtx.PodUID = podMeta.UID
+		k8sCtx.ServiceAccount = podMeta.ServiceAccount
+		k8sCtx.Image = podMeta.Image
+		k8sCtx.Labels = podMeta.Labels
+		containerCtx.ContainerName = podMeta.ContainerName
+	}
+
+	// Build container context with capability defaults
+	containerCtx.RunAsRoot = uidVal == 0
+	containerCtx.AllowPrivilegeEscalation = true  // Default to true (least restrictive)
+	containerCtx.Privileged = false               // Default to false
 
 	return &EnrichedEvent{
 		RawEvent:   rawEvent,
