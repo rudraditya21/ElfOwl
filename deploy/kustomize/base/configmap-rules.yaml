@@ -22,7 +22,7 @@ data:
       title: "Container running as root"
       severity: "HIGH"
       eventTypes:
-        - "process"
+        - "process_execution"
       conditions:
         - field: "process.uid"
           operator: "equals"
@@ -32,9 +32,9 @@ data:
       title: "Privileged container detected"
       severity: "CRITICAL"
       eventTypes:
-        - "process"
+        - "process_execution"
       conditions:
-        - field: "process.privileged"
+        - field: "container.security_context.privileged"
           operator: "equals"
           value: true
 
@@ -45,8 +45,11 @@ data:
         - "file_access"
       conditions:
         - field: "file.path"
-          operator: "starts_with"
+          operator: "contains"
           value: "/etc/"
+        - field: "file.operation"
+          operator: "equals"
+          value: "write"
 
     - controlID: "CIS_4.6.1"
       title: "Outbound network connection without network policy"
@@ -54,15 +57,15 @@ data:
       eventTypes:
         - "network_connection"
       conditions:
-        - field: "network.direction"
+        - field: "network.egress_restricted"
           operator: "equals"
-          value: "egress"
+          value: false
 
     - controlID: "CIS_5.1.1"
       title: "Dangerous Linux capability used"
       severity: "HIGH"
       eventTypes:
-        - "capability"
+        - "capability_usage"
       conditions:
         - field: "capability.name"
           operator: "in"

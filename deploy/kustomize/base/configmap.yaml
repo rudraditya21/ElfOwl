@@ -62,13 +62,6 @@ data:
           enabled: true
           verify: true
 
-      rules:
-        config_map:
-          name: "elf-owl-rules"
-          namespace: "elf-owl-system"
-        eval_timeout: 5s
-        log_violations: true
-
       metrics:
         enabled: true
         listen_address: ":9090"

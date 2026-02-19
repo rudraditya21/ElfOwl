@@ -53,7 +53,7 @@
   title: Ensure the filesystem is read-only where possible
   severity: MEDIUM
   eventTypes:
-    - file_write
+    - file_access
   conditions:
     - field: file.path
       operator: in
@@ -83,6 +83,7 @@
   title: Ensure default deny NetworkPolicy is in place
   severity: HIGH
   eventTypes:
+    - network_connection
     - network_policy_check
   conditions:
     - field: kubernetes.has_default_deny_policy
