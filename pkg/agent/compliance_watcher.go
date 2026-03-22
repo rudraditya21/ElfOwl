@@ -28,25 +28,26 @@ func (a *Agent) startComplianceWatchers(ctx context.Context) {
 		resync = 0
 	}
 
+	ready := make(chan struct{})
 	factory := informers.NewSharedInformerFactory(a.K8sClient.GetClientset(), resync)
 	podInformer := factory.Core().V1().Pods().Informer()
 	netpolInformer := factory.Networking().V1().NetworkPolicies().Informer()
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			a.onPodEvent(ctx, obj)
+			a.onPodEvent(ctx, obj, ready)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
-			a.onPodEvent(ctx, newObj)
+			a.onPodEvent(ctx, newObj, ready)
 		},
 	})
 
 	netpolInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			a.onNetworkPolicyEvent(ctx, obj)
+			a.onNetworkPolicyEvent(ctx, obj, ready)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
-			a.onNetworkPolicyEvent(ctx, newObj)
+			a.onNetworkPolicyEvent(ctx, newObj, ready)
 		},
 	})
 
@@ -57,14 +58,26 @@ func (a *Agent) startComplianceWatchers(ctx context.Context) {
 		return
 	}
 
+	// ANCHOR: Cache sync gate for compliance events - Safety: avoid pre-sync emissions - Mar 22, 2026
+	close(ready)
+
 	a.Logger.Info("compliance watchers started")
 	<-ctx.Done()
 	a.Logger.Info("compliance watchers stopped")
 }
 
-func (a *Agent) onPodEvent(ctx context.Context, obj interface{}) {
+func (a *Agent) onPodEvent(ctx context.Context, obj interface{}, ready <-chan struct{}) {
+	if !complianceReady(ready) {
+		return
+	}
+
 	pod := podFromObject(obj)
 	if pod == nil {
+		return
+	}
+
+	// ANCHOR: Running-only pod compliance events - Signal: avoid terminal/pending noise - Mar 22, 2026
+	if !shouldProcessPod(pod) {
 		return
 	}
 
@@ -76,7 +89,11 @@ func (a *Agent) onPodEvent(ctx context.Context, obj interface{}) {
 	a.handleComplianceEvent(ctx, event)
 }
 
-func (a *Agent) onNetworkPolicyEvent(ctx context.Context, obj interface{}) {
+func (a *Agent) onNetworkPolicyEvent(ctx context.Context, obj interface{}, ready <-chan struct{}) {
+	if !complianceReady(ready) {
+		return
+	}
+
 	netpol := networkPolicyFromObject(obj)
 	if netpol == nil {
 		return
@@ -343,4 +360,20 @@ func parseImageTag(image string) string {
 		return image[idx+1:]
 	}
 	return "latest"
+}
+
+func complianceReady(ready <-chan struct{}) bool {
+	if ready == nil {
+		return true
+	}
+	select {
+	case <-ready:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldProcessPod(pod *corev1.Pod) bool {
+	return pod != nil && pod.Status.Phase == corev1.PodRunning
 }
