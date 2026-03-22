@@ -298,16 +298,35 @@ func procContainerID(pid uint32) string {
 			if seg == "" {
 				continue
 			}
-			// Trim common prefixes
-			seg = strings.TrimPrefix(seg, "docker-")
+			// ANCHOR: Robust container ID parsing - Bugfix: containerd/cri-o cgroup paths - Mar 22, 2026
+			// Normalize common runtime prefixes/suffixes and require hex IDs to avoid
+			// mistaking pod UID segments for container IDs.
 			seg = strings.TrimSuffix(seg, ".scope")
+			seg = strings.TrimPrefix(seg, "docker-")
+			seg = strings.TrimPrefix(seg, "containerd-")
+			seg = strings.TrimPrefix(seg, "cri-containerd-")
+			seg = strings.TrimPrefix(seg, "crio-")
+			seg = strings.TrimPrefix(seg, "cri-o-")
+			seg = strings.TrimPrefix(seg, "libpod-")
+
 			// Container IDs are typically 64-hex chars; accept 32+ as fallback.
-			if len(seg) >= 32 {
+			seg = strings.ToLower(seg)
+			if len(seg) >= 32 && isHexString(seg) {
 				return seg
 			}
 		}
 	}
 	return ""
+}
+
+func isHexString(value string) bool {
+	for _, r := range value {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // ANCHOR: Helper methods for enrichment field extraction - Phase 2, Dec 26, 2025
