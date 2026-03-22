@@ -408,6 +408,20 @@ func (e *Enricher) parseImageTag(image string) string {
 	return "latest"
 }
 
+// ANCHOR: Compliance field propagation - Feature: image/volume/kernel signals - Mar 22, 2026
+// Applies pod-derived compliance fields to container context for CIS rule evaluation.
+func applyPodComplianceFields(containerCtx *ContainerContext, podMeta *PodMetadata) {
+	if containerCtx == nil || podMeta == nil {
+		return
+	}
+	containerCtx.ImageScanStatus = podMeta.ImageScanStatus
+	containerCtx.ImageRegistryAuth = podMeta.ImageRegistryAuth
+	containerCtx.ImageSigned = podMeta.ImageSigned
+	containerCtx.StorageRequest = podMeta.StorageRequest
+	containerCtx.VolumeType = podMeta.VolumeType
+	containerCtx.KernelHardening = podMeta.KernelHardening
+}
+
 // EnrichProcessEvent enriches a cilium/ebpf process event
 // ANCHOR: Process event enrichment with security context - Phase 2, Dec 26, 2025
 // Migrated from goBPF to cilium/ebpf - Dec 27, 2025
@@ -519,6 +533,9 @@ func (e *Enricher) EnrichProcessEvent(
 		containerCtx.CPULimit = podMeta.CPULimit
 		containerCtx.MemoryRequest = podMeta.MemoryRequest
 		containerCtx.CPURequest = podMeta.CPURequest
+		// ANCHOR: Compliance fields from pod metadata - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Propagates pod-derived compliance signals into process events for CIS checks.
+		applyPodComplianceFields(containerCtx, podMeta)
 	} else {
 		// Fallback to defaults when pod metadata not available
 		containerCtx.RunAsRoot = uidVal == 0
@@ -602,6 +619,9 @@ func (e *Enricher) EnrichNetworkEvent(
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
 		containerCtx.ContainerName = podMeta.ContainerName
+		// ANCHOR: Compliance fields for network events - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Propagates pod-derived compliance signals into network events for rule evaluation.
+		applyPodComplianceFields(containerCtx, podMeta)
 	}
 
 	// Build network context with policy evaluation
@@ -689,6 +709,9 @@ func (e *Enricher) EnrichDNSEvent(
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
 		containerCtx.ContainerName = podMeta.ContainerName
+		// ANCHOR: Compliance fields for DNS events - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Propagates pod-derived compliance signals into DNS events for rule evaluation.
+		applyPodComplianceFields(containerCtx, podMeta)
 	}
 
 	// Build DNS context with query and response information
@@ -753,6 +776,9 @@ func (e *Enricher) EnrichFileEvent(
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
 		containerCtx.ContainerName = podMeta.ContainerName
+		// ANCHOR: Compliance fields for file events - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Propagates pod-derived compliance signals into file events for rule evaluation.
+		applyPodComplianceFields(containerCtx, podMeta)
 	}
 
 	// Build container context with security defaults
@@ -832,6 +858,9 @@ func (e *Enricher) EnrichCapabilityEvent(
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
 		containerCtx.ContainerName = podMeta.ContainerName
+		// ANCHOR: Compliance fields for capability events - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Propagates pod-derived compliance signals into capability events for rule evaluation.
+		applyPodComplianceFields(containerCtx, podMeta)
 	}
 
 	// Build container context with capability defaults
