@@ -24,8 +24,8 @@ func (a *Agent) startComplianceWatchers(ctx context.Context) {
 	}
 
 	resync := a.Config.Agent.Kubernetes.WatchInterval
-	if resync <= 0 {
-		resync = 30 * time.Second
+	if resync < 0 {
+		resync = 0
 	}
 
 	factory := informers.NewSharedInformerFactory(a.K8sClient.GetClientset(), resync)
