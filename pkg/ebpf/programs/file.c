@@ -24,14 +24,18 @@ TRACEPOINT_PROBE(syscalls, sys_enter_openat) {
     struct file_event evt = {};
 
     evt.pid = bpf_get_current_pid_tgid() >> 32;
-    evt.operation = 1;  // write
+    evt.cgroup_id = bpf_get_current_cgroup_id();
 
-    // TODO (Phase 2): Implement actual file monitoring logic
-    // - Extract filename from syscall arguments
-    // - Read file permissions
-    // - Track writes to system directories (/etc, /sys, etc.)
-    // - Detect privilege escalation attempts
-    // - Correlate with pod identity
+    // ANCHOR: File openat extraction - Feature: flags/filename/cgroup - Mar 23, 2026
+    // Captures filename, open flags, and cgroup for pod correlation.
+    // Uses flags to classify read vs write intent for compliance rules.
+    bpf_probe_read_user_str(&evt.filename, sizeof(evt.filename), (void *)args->filename);
+    evt.flags = args->flags;
+    if ((evt.flags & O_WRONLY) || (evt.flags & O_RDWR)) {
+        evt.operation = 1;  // write
+    } else {
+        evt.operation = 2;  // read
+    }
 
     file_events.perf_submit(args, &evt, sizeof(evt));
     return 0;

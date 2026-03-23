@@ -27,14 +27,18 @@ TRACEPOINT_PROBE(udp, udp_sendmsg) {
 
     evt.pid = bpf_get_current_pid_tgid() >> 32;
     evt.query_allowed = 1;  // Default: allow (policy evaluation in userspace)
+    evt.cgroup_id = bpf_get_current_cgroup_id();
 
-    // TODO (Phase 2): Implement actual DNS monitoring logic
-    // - Parse DNS query packets from UDP port 53
-    // - Extract query domain name
-    // - Correlate with network policies
-    // - Check against DNS allowlist/denylist
-    // - Detect exfiltration attempts to unauthorized servers
-    // - Support DNS proxy/forwarder detection
+    // ANCHOR: DNS tracepoint extraction - Feature: cgroup/server/port53 - Mar 23, 2026
+    // Filters UDP traffic to port 53 and captures server address for CIS 4.6.4 signals.
+    if (args->dport != 53 && args->sport != 53) {
+        return 0;
+    }
+
+    // Best-effort IPv4 server capture; IPv6 parsing will be added in a later phase.
+    bpf_probe_read_kernel(&evt.server, sizeof(__u32), &args->daddr);
+
+    // TODO (Phase 3): Parse DNS payload to extract query name/type/rcode.
 
     dns_events.perf_submit(args, &evt, sizeof(evt));
     return 0;

@@ -29,11 +29,14 @@ TRACEPOINT_PROBE(sched, sched_process_exec) {
     evt.pid = bpf_get_current_pid_tgid() >> 32;
     evt.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     evt.gid = bpf_get_current_uid_gid() >> 32;
+    evt.cgroup_id = bpf_get_current_cgroup_id();
 
-    // TODO (Phase 2): Implement actual process monitoring logic
-    // - Extract command line arguments
-    // - Read capabilities from task struct
-    // - Populate cgroup ID for K8s metadata correlation
+    // ANCHOR: Process tracepoint extraction - Feature: comm/filename/cgroup - Mar 23, 2026
+    // Captures command name, best-effort filename, and cgroup for CIS 4.5 signals.
+    // argv parsing and capability extraction require additional kernel helpers (Phase 3).
+    bpf_get_current_comm(&evt.filename, sizeof(evt.filename));
+    bpf_probe_read_kernel_str(&evt.argv, sizeof(evt.argv), args->filename);
+    evt.capabilities = 0;
 
     process_events.perf_submit(args, &evt, sizeof(evt));
     return 0;

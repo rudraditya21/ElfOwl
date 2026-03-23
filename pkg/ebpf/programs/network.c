@@ -27,14 +27,16 @@ TRACEPOINT_PROBE(tcp, tcp_connect) {
     struct network_event evt = {};
 
     evt.pid = bpf_get_current_pid_tgid() >> 32;
-    evt.family = AF_INET;  // Will be updated in Phase 2
     evt.protocol = IPPROTO_TCP;
+    evt.cgroup_id = bpf_get_current_cgroup_id();
 
-    // TODO (Phase 2): Implement actual network monitoring logic
-    // - Extract source and destination addresses from sock struct
-    // - Handle both IPv4 and IPv6
-    // - Correlate with cgroup for pod identification
-    // - Track allowed/disallowed connections
+    // ANCHOR: TCP connect extraction - Feature: addr/ports/cgroup - Mar 23, 2026
+    // Captures IPv4 endpoints and port data from tracepoint payload for CIS 4.6 signals.
+    evt.family = args->family;
+    evt.saddr = args->saddr;
+    evt.daddr = args->daddr;
+    evt.sport = args->sport;
+    evt.dport = args->dport;
 
     network_events.perf_submit(args, &evt, sizeof(evt));
     return 0;
