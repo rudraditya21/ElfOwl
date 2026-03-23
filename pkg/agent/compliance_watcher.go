@@ -24,29 +24,30 @@ func (a *Agent) startComplianceWatchers(ctx context.Context) {
 	}
 
 	resync := a.Config.Agent.Kubernetes.WatchInterval
-	if resync <= 0 {
-		resync = 30 * time.Second
+	if resync < 0 {
+		resync = 0
 	}
 
+	ready := make(chan struct{})
 	factory := informers.NewSharedInformerFactory(a.K8sClient.GetClientset(), resync)
 	podInformer := factory.Core().V1().Pods().Informer()
 	netpolInformer := factory.Networking().V1().NetworkPolicies().Informer()
 
 	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			a.onPodEvent(ctx, obj)
+			a.onPodEvent(ctx, obj, ready)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
-			a.onPodEvent(ctx, newObj)
+			a.onPodEvent(ctx, newObj, ready)
 		},
 	})
 
 	netpolInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			a.onNetworkPolicyEvent(ctx, obj)
+			a.onNetworkPolicyEvent(ctx, obj, ready)
 		},
 		UpdateFunc: func(_, newObj interface{}) {
-			a.onNetworkPolicyEvent(ctx, newObj)
+			a.onNetworkPolicyEvent(ctx, newObj, ready)
 		},
 	})
 
@@ -57,26 +58,40 @@ func (a *Agent) startComplianceWatchers(ctx context.Context) {
 		return
 	}
 
+	// ANCHOR: Cache sync gate for compliance events - Safety: avoid pre-sync emissions - Mar 22, 2026
+	close(ready)
 	a.Logger.Info("compliance watchers started")
 	<-ctx.Done()
 	a.Logger.Info("compliance watchers stopped")
 }
 
-func (a *Agent) onPodEvent(ctx context.Context, obj interface{}) {
+func (a *Agent) onPodEvent(ctx context.Context, obj interface{}, ready <-chan struct{}) {
+	if !complianceReady(ready) {
+		return
+	}
+
 	pod := podFromObject(obj)
 	if pod == nil {
 		return
 	}
 
-	event := a.buildPodSpecEvent(pod)
-	if event == nil {
+	// ANCHOR: Running-only pod compliance events - Signal: avoid terminal/pending noise - Mar 22, 2026
+	if !shouldProcessPod(pod) {
 		return
 	}
 
-	a.handleComplianceEvent(ctx, event)
+	// ANCHOR: Multi-container pod_spec_check events - Bugfix: per-container compliance - Mar 22, 2026
+	events := a.buildPodSpecEvents(pod)
+	for _, event := range events {
+		a.handleComplianceEvent(ctx, event)
+	}
 }
 
-func (a *Agent) onNetworkPolicyEvent(ctx context.Context, obj interface{}) {
+func (a *Agent) onNetworkPolicyEvent(ctx context.Context, obj interface{}, ready <-chan struct{}) {
+	if !complianceReady(ready) {
+		return
+	}
+
 	netpol := networkPolicyFromObject(obj)
 	if netpol == nil {
 		return
@@ -87,28 +102,33 @@ func (a *Agent) onNetworkPolicyEvent(ctx context.Context, obj interface{}) {
 		hasDefaultDeny = a.K8sClient.CheckNamespaceDefaultDenyPolicy(ctx, netpol.Namespace)
 	}
 
-	event := &enrichment.EnrichedEvent{
-		EventType: "network_policy_check",
-		Timestamp: time.Now(),
-		Kubernetes: &enrichment.K8sContext{
-			ClusterID:                   a.Config.Agent.ClusterID,
-			NodeName:                    a.Config.Agent.NodeName,
-			Namespace:                   netpol.Namespace,
-			HasDefaultDenyNetworkPolicy: hasDefaultDeny,
-		},
-	}
+	event := a.buildNetworkPolicyEvent(netpol, hasDefaultDeny)
 
 	a.handleComplianceEvent(ctx, event)
 }
 
 // ANCHOR: Pod spec compliance event builder - Feature: CIS pod_spec_check - Mar 22, 2026
 // Extracts security context and resource settings from pod specs for CIS rules.
-func (a *Agent) buildPodSpecEvent(pod *corev1.Pod) *enrichment.EnrichedEvent {
+func (a *Agent) buildPodSpecEvents(pod *corev1.Pod) []*enrichment.EnrichedEvent {
+	if pod == nil || len(pod.Spec.Containers) == 0 {
+		return nil
+	}
+
+	events := make([]*enrichment.EnrichedEvent, 0, len(pod.Spec.Containers))
+	for _, container := range pod.Spec.Containers {
+		event := a.buildPodSpecEventForContainer(pod, container)
+		if event != nil {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
+func (a *Agent) buildPodSpecEventForContainer(pod *corev1.Pod, container corev1.Container) *enrichment.EnrichedEvent {
 	if pod == nil {
 		return nil
 	}
 
-	container := firstContainer(pod)
 	containerName := container.Name
 	image := container.Image
 	imagePullPolicy := "IfNotPresent"
@@ -201,6 +221,23 @@ func (a *Agent) buildPodSpecEvent(pod *corev1.Pod) *enrichment.EnrichedEvent {
 	}
 }
 
+func (a *Agent) buildNetworkPolicyEvent(netpol *networkingv1.NetworkPolicy, hasDefaultDeny bool) *enrichment.EnrichedEvent {
+	if netpol == nil {
+		return nil
+	}
+
+	return &enrichment.EnrichedEvent{
+		EventType: "network_policy_check",
+		Timestamp: time.Now(),
+		Kubernetes: &enrichment.K8sContext{
+			ClusterID:                   a.Config.Agent.ClusterID,
+			NodeName:                    a.Config.Agent.NodeName,
+			Namespace:                   netpol.Namespace,
+			HasDefaultDenyNetworkPolicy: hasDefaultDeny,
+		},
+	}
+}
+
 func podFromObject(obj interface{}) *corev1.Pod {
 	switch typed := obj.(type) {
 	case *corev1.Pod:
@@ -223,13 +260,6 @@ func networkPolicyFromObject(obj interface{}) *networkingv1.NetworkPolicy {
 		}
 	}
 	return nil
-}
-
-func firstContainer(pod *corev1.Pod) corev1.Container {
-	if pod == nil || len(pod.Spec.Containers) == 0 {
-		return corev1.Container{}
-	}
-	return pod.Spec.Containers[0]
 }
 
 func apparmorProfile(pod *corev1.Pod, containerName string) string {
@@ -343,4 +373,20 @@ func parseImageTag(image string) string {
 		return image[idx+1:]
 	}
 	return "latest"
+}
+
+func complianceReady(ready <-chan struct{}) bool {
+	if ready == nil {
+		return true
+	}
+	select {
+	case <-ready:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldProcessPod(pod *corev1.Pod) bool {
+	return pod != nil && pod.Status.Phase == corev1.PodRunning
 }

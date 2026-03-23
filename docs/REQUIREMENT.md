@@ -45,6 +45,21 @@ In the unified CloudArmour model, elf-owl acts as a **single-replica, read-only 
 
 ---
 
+## Known limitations
+
+ANCHOR: Known limitations - Compliance fields not populated yet - Mar 22, 2026
+
+Some CIS controls rely on fields that are not yet populated in the current pipeline. These may
+result in **unknown == violation** behavior until those fields are implemented. Examples include:
+
+- `container.image_scan_status`, `container.image_signed`, `container.image_registry_auth`
+- `container.volume_type`, `container.storage_request`, `container.kernel_hardening`
+
+This does **not** affect the read-only model, but it does affect the accuracy of those specific
+controls until the underlying signals are implemented.
+
+---
+
 ## What elf-owl does NOT do
 
 elf-owl is intentionally limited to avoid enforcement risk and to preserve audit integrity.
@@ -68,5 +83,4 @@ It does **not**:
 - **Separation of concerns:** elf-owl focuses on compliance signals, not remediation.
 
 ---
-
 

@@ -311,7 +311,10 @@ func DefaultConfig() *Config {
 			Kubernetes: KubernetesConfig{
 				InCluster:        true,
 				MetadataCacheTTL: 5 * time.Minute,
-				WatchInterval:    30 * time.Second,
+				// ANCHOR: Disable informer resync by default - Perf: reduce compliance storms - Mar 22, 2026
+				// Resyncs can generate full-cluster compliance event storms; keep disabled
+				// unless operators explicitly configure a resync interval.
+				WatchInterval: 0,
 			},
 			Rules: RulesConfig{
 				ConfigMap: struct {
