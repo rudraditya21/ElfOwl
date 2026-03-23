@@ -82,10 +82,11 @@ type FileEvent struct {
 // ============================================================================
 
 type CapabilityEvent struct {
+	CgroupID    uint64
 	PID         uint32
 	Capability  uint32 // CAP_SYS_ADMIN=21, CAP_SYS_MODULE=16, etc.
-	CheckType   uint8  // check=1, use=2
-	CgroupID    uint64
+	SyscallID   uint32
+	CheckType   uint8 // check=1, use=2
 	SyscallName [32]byte
 }
 

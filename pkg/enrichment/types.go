@@ -122,11 +122,14 @@ type FileContext struct {
 }
 
 // CapabilityContext captures capability usage metadata
+// ANCHOR: Capability context extension - Feature: syscall attribution - Mar 24, 2026
+// Surfaces syscall IDs associated with capability checks.
 type CapabilityContext struct {
-	Name    string `json:"name"`
-	Allowed bool   `json:"allowed"`
-	PID     uint32 `json:"pid"`
-	UID     uint32 `json:"uid"`
+	Name      string `json:"name"`
+	Allowed   bool   `json:"allowed"`
+	PID       uint32 `json:"pid"`
+	UID       uint32 `json:"uid"`
+	SyscallID uint32 `json:"syscall_id"`
 }
 
 // Note: PodMetadata and NodeMetadata are defined in kubernetes package
