@@ -7,11 +7,15 @@ package ebpf
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/perf"
+	"github.com/cilium/ebpf/ringbuf"
 	"go.uber.org/zap"
 )
 
@@ -183,7 +187,7 @@ func programDefinitions(opts LoadOptions) []programDefinition {
 
 // ANCHOR: Load single eBPF program set - Feature: tracepoint attach - Mar 23, 2026
 // Parses bytecode, loads the collection, attaches tracepoint, and returns ProgramSet.
-func loadProgramSet(logger *zap.Logger, def programDefinition) (*ProgramSet, error) {
+func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions) (*ProgramSet, error) {
 	data, err := GetProgram(def.Name)
 	if err != nil {
 		return nil, fmt.Errorf("get bytecode: %w", err)
@@ -209,17 +213,28 @@ func loadProgramSet(logger *zap.Logger, def programDefinition) (*ProgramSet, err
 
 	progName, prog := selectTracepointProgram(collection.Programs)
 	if prog == nil {
+		collection.Close()
 		return nil, fmt.Errorf("no tracepoint program found in %s", def.Name)
 	}
 
 	tp, err := link.Tracepoint(def.TracepointGroup, def.TracepointName, prog, nil)
 	if err != nil {
+		collection.Close()
 		return nil, fmt.Errorf("attach tracepoint %s/%s: %w", def.TracepointGroup, def.TracepointName, err)
 	}
 
 	mapName, eventMap := selectEventMap(collection.Maps, def.MapName)
 	if eventMap == nil {
+		tp.Close()
+		collection.Close()
 		return nil, fmt.Errorf("event map %s not found", def.MapName)
+	}
+
+	reader, err := createReader(eventMap, def, opts, logger)
+	if err != nil {
+		tp.Close()
+		collection.Close()
+		return nil, fmt.Errorf("create event reader: %w", err)
 	}
 
 	if logger != nil {
@@ -234,6 +249,7 @@ func loadProgramSet(logger *zap.Logger, def programDefinition) (*ProgramSet, err
 	return &ProgramSet{
 		Program: prog,
 		Maps:    map[string]*ebpf.Map{mapName: eventMap},
+		Reader:  reader,
 		Links:   []link.Link{tp},
 		Logger:  logger,
 	}, nil
@@ -272,6 +288,56 @@ func selectEventMap(maps map[string]*ebpf.Map, preferred string) (string, *ebpf.
 	return "", nil
 }
 
+// ANCHOR: Event reader creation - Feature: perf/ringbuf reader wiring - Mar 23, 2026
+// Builds a reader for the event map using perf or ring buffer settings.
+func createReader(eventMap *ebpf.Map, def programDefinition, opts LoadOptions, logger *zap.Logger) (Reader, error) {
+	if eventMap == nil {
+		return nil, nil
+	}
+
+	switch eventMap.Type() {
+	case ebpf.RingBuf:
+		if !opts.RingBuffer.Enabled {
+			return nil, fmt.Errorf("ring buffer reader disabled")
+		}
+		reader, err := ringbuf.NewReader(eventMap)
+		if err != nil {
+			return nil, fmt.Errorf("create ringbuf reader: %w", err)
+		}
+		return &RingBufferReader{
+			reader:  reader,
+			timeout: def.Config.Timeout,
+			logger:  logger,
+		}, nil
+	case ebpf.PerfEventArray:
+		if !opts.PerfBuffer.Enabled {
+			return nil, fmt.Errorf("perf buffer reader disabled")
+		}
+		reader, err := perf.NewReader(eventMap, perfBufferSize(def, opts))
+		if err != nil {
+			return nil, fmt.Errorf("create perf reader: %w", err)
+		}
+		return &PerfBufferReader{
+			reader:      reader,
+			timeout:     def.Config.Timeout,
+			lostHandler: opts.PerfBuffer.LostHandler,
+			logger:      logger,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported event map type: %s", eventMap.Type())
+	}
+}
+
+func perfBufferSize(def programDefinition, opts LoadOptions) int {
+	if def.Config.BufferSize > 0 {
+		return def.Config.BufferSize
+	}
+	if opts.PerfBuffer.PageCount > 0 {
+		return opts.PerfBuffer.PageCount * os.Getpagesize()
+	}
+	return 64 * os.Getpagesize()
+}
+
 // ============================================================================
 // LoadPrograms - Main entry point for loading eBPF programs
 // ============================================================================
@@ -307,7 +373,7 @@ func LoadProgramsWithOptions(logger *zap.Logger, opts LoadOptions) (*Collection,
 			continue
 		}
 
-		programSet, err := loadProgramSet(logger, def)
+		programSet, err := loadProgramSet(logger, def, opts)
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", def.Name, err)
 		}
@@ -496,9 +562,16 @@ func attachTracepoint(prog *ebpf.Program, group, name string) error {
 // ANCHOR: Perf Buffer Reader - Phase 2: Monitor Implementation - Dec 27, 2025
 // Reads events from per-CPU perf buffers (available on all eBPF kernels)
 type PerfBufferReader struct {
-	// TODO (Phase 3): Integrate cilium/ebpf perf.Reader
 	// perf.Reader handles multi-CPU perf event arrays
-	// Each CPU has page-backed mmap'd buffer
+	reader *perf.Reader
+
+	// Optional timeout for Read operations.
+	timeout time.Duration
+
+	// Log dropped samples when LostSamples > 0.
+	lostHandler bool
+
+	logger *zap.Logger
 	closed bool
 }
 
@@ -508,18 +581,48 @@ func (pr *PerfBufferReader) Read() ([]byte, error) {
 		return nil, fmt.Errorf("reader closed")
 	}
 
-	// TODO (Phase 3): Implement actual perf buffer reading
-	// Will use cilium/ebpf perf.Reader to aggregate events from all CPUs
-	// Blocks until event available or timeout (5 seconds)
-	// Returns raw event bytes for parsing by monitor
+	if pr.reader == nil {
+		return nil, fmt.Errorf("perf reader not initialized")
+	}
 
-	return nil, fmt.Errorf("Phase 3 implementation: perf buffer event streaming")
+	if pr.timeout > 0 {
+		pr.reader.SetDeadline(time.Now().Add(pr.timeout))
+	} else {
+		pr.reader.SetDeadline(time.Time{})
+	}
+
+	record, err := pr.reader.Read()
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if record.LostSamples > 0 && pr.lostHandler && pr.logger != nil {
+		pr.logger.Warn("perf buffer lost samples",
+			zap.Uint64("lost_samples", record.LostSamples),
+		)
+	}
+
+	if len(record.RawSample) == 0 {
+		return nil, nil
+	}
+
+	payload := make([]byte, len(record.RawSample))
+	copy(payload, record.RawSample)
+	return payload, nil
 }
 
 // Close closes the perf buffer reader
 func (pr *PerfBufferReader) Close() error {
 	pr.closed = true
-	// TODO (Phase 3): Close perf.Reader and unmap buffers
+	if pr.reader == nil {
+		return nil
+	}
+	if err := pr.reader.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
 	return nil
 }
 
@@ -528,9 +631,13 @@ func (pr *PerfBufferReader) Close() error {
 // ANCHOR: Ring Buffer Reader - Phase 2: Monitor Implementation - Dec 27, 2025
 // Reads events from single shared ring buffer (preferred for modern kernels)
 type RingBufferReader struct {
-	// TODO (Phase 3): Integrate cilium/ebpf ringbuf.Reader
 	// ringbuf.Reader handles single shared ring buffer
-	// More efficient than perf buffers
+	reader *ringbuf.Reader
+
+	// Optional timeout for Read operations.
+	timeout time.Duration
+
+	logger *zap.Logger
 	closed bool
 }
 
@@ -540,17 +647,41 @@ func (rr *RingBufferReader) Read() ([]byte, error) {
 		return nil, fmt.Errorf("reader closed")
 	}
 
-	// TODO (Phase 3): Implement actual ring buffer reading
-	// Will use cilium/ebpf ringbuf.Reader to read events
-	// Blocks until event available or timeout (5 seconds)
-	// Returns raw event bytes for parsing by monitor
+	if rr.reader == nil {
+		return nil, fmt.Errorf("ringbuf reader not initialized")
+	}
 
-	return nil, fmt.Errorf("Phase 3 implementation: ring buffer event streaming")
+	if rr.timeout > 0 {
+		rr.reader.SetDeadline(time.Now().Add(rr.timeout))
+	} else {
+		rr.reader.SetDeadline(time.Time{})
+	}
+
+	record, err := rr.reader.Read()
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if len(record.RawSample) == 0 {
+		return nil, nil
+	}
+
+	payload := make([]byte, len(record.RawSample))
+	copy(payload, record.RawSample)
+	return payload, nil
 }
 
 // Close closes the ring buffer reader
 func (rr *RingBufferReader) Close() error {
 	rr.closed = true
-	// TODO (Phase 3): Close ringbuf.Reader
+	if rr.reader == nil {
+		return nil
+	}
+	if err := rr.reader.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
 	return nil
 }
