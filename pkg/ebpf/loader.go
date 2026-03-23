@@ -43,6 +43,9 @@ type ProgramSet struct {
 	// Program is the loaded eBPF program (e.g., sched_process_exec tracepoint)
 	Program *ebpf.Program
 
+	// Programs holds all loaded programs for this set (multiple tracepoints).
+	Programs map[string]*ebpf.Program
+
 	// Maps contains all maps used by this program (perf buffers, ring buffers, etc.)
 	Maps map[string]*ebpf.Map
 
@@ -124,7 +127,14 @@ type programDefinition struct {
 	MapName         string
 	TracepointGroup string
 	TracepointName  string
+	Tracepoints     []TracepointSpec
 	Config          ProgramConfig
+}
+
+// TracepointSpec describes a tracepoint attachment target.
+type TracepointSpec struct {
+	Group string
+	Name  string
 }
 
 // DefaultLoadOptions enables all programs with perf buffers by default.
@@ -141,22 +151,32 @@ func DefaultLoadOptions() LoadOptions {
 }
 
 func programDefinitions(opts LoadOptions) []programDefinition {
+	// ANCHOR: Multi-tracepoint program definitions - Feature: expanded probes - Mar 24, 2026
+	// Defines all tracepoints to attach per program for richer event coverage.
 	return []programDefinition{
 		{
 			Name:            ProcessProgramName,
 			Description:     "process execution",
 			MapName:         ProcessEventsMap,
-			TracepointGroup: "sched",
-			TracepointName:  "sched_process_exec",
-			Config:          opts.Process,
+			TracepointGroup: "syscalls",
+			TracepointName:  "sys_enter_execve",
+			Tracepoints: []TracepointSpec{
+				{Group: "syscalls", Name: "sys_enter_execve"},
+				{Group: "syscalls", Name: "sys_enter_execveat"},
+			},
+			Config: opts.Process,
 		},
 		{
 			Name:            NetworkProgramName,
 			Description:     "network connections",
 			MapName:         NetworkEventsMap,
-			TracepointGroup: "tcp",
-			TracepointName:  "tcp_connect",
-			Config:          opts.Network,
+			TracepointGroup: "sock",
+			TracepointName:  "inet_sock_set_state",
+			Tracepoints: []TracepointSpec{
+				{Group: "sock", Name: "inet_sock_set_state"},
+				{Group: "syscalls", Name: "sys_enter_sendto"},
+			},
+			Config: opts.Network,
 		},
 		{
 			Name:            FileProgramName,
@@ -164,7 +184,15 @@ func programDefinitions(opts LoadOptions) []programDefinition {
 			MapName:         FileEventsMap,
 			TracepointGroup: "syscalls",
 			TracepointName:  "sys_enter_openat",
-			Config:          opts.File,
+			Tracepoints: []TracepointSpec{
+				{Group: "syscalls", Name: "sys_enter_openat"},
+				{Group: "syscalls", Name: "sys_enter_write"},
+				{Group: "syscalls", Name: "sys_enter_pwrite64"},
+				{Group: "syscalls", Name: "sys_enter_chmod"},
+				{Group: "syscalls", Name: "sys_enter_fchmodat"},
+				{Group: "syscalls", Name: "sys_enter_unlinkat"},
+			},
+			Config: opts.File,
 		},
 		{
 			Name:            CapabilityProgramName,
@@ -172,15 +200,24 @@ func programDefinitions(opts LoadOptions) []programDefinition {
 			MapName:         CapabilityEventsMap,
 			TracepointGroup: "capability",
 			TracepointName:  "cap_capable",
-			Config:          opts.Capability,
+			Tracepoints: []TracepointSpec{
+				{Group: "raw_syscalls", Name: "sys_enter"},
+				{Group: "capability", Name: "cap_capable"},
+			},
+			Config: opts.Capability,
 		},
 		{
 			Name:            DNSProgramName,
 			Description:     "DNS queries",
 			MapName:         DNSEventsMap,
-			TracepointGroup: "udp",
-			TracepointName:  "udp_sendmsg",
-			Config:          opts.DNS,
+			TracepointGroup: "syscalls",
+			TracepointName:  "sys_enter_sendto",
+			Tracepoints: []TracepointSpec{
+				{Group: "syscalls", Name: "sys_enter_sendto"},
+				{Group: "syscalls", Name: "sys_enter_recvfrom"},
+				{Group: "syscalls", Name: "sys_exit_recvfrom"},
+			},
+			Config: opts.DNS,
 		},
 	}
 }
@@ -211,16 +248,55 @@ func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions)
 		return nil, fmt.Errorf("load collection: %w", err)
 	}
 
-	progName, prog := selectTracepointProgram(collection.Programs)
-	if prog == nil {
-		collection.Close()
-		return nil, fmt.Errorf("no tracepoint program found in %s", def.Name)
-	}
+	var (
+		links           []link.Link
+		programs        = make(map[string]*ebpf.Program)
+		primaryProg     *ebpf.Program
+		primaryProgName string
+	)
 
-	tp, err := link.Tracepoint(def.TracepointGroup, def.TracepointName, prog, nil)
-	if err != nil {
-		collection.Close()
-		return nil, fmt.Errorf("attach tracepoint %s/%s: %w", def.TracepointGroup, def.TracepointName, err)
+	if len(def.Tracepoints) > 0 {
+		for _, tpSpec := range def.Tracepoints {
+			progName, prog := selectTracepointProgramFor(collection.Programs, tpSpec.Group, tpSpec.Name)
+			if prog == nil {
+				collection.Close()
+				return nil, fmt.Errorf("no tracepoint program found for %s/%s in %s", tpSpec.Group, tpSpec.Name, def.Name)
+			}
+
+			tp, err := link.Tracepoint(tpSpec.Group, tpSpec.Name, prog, nil)
+			if err != nil {
+				for _, lnk := range links {
+					if lnk != nil {
+						_ = lnk.Close()
+					}
+				}
+				collection.Close()
+				return nil, fmt.Errorf("attach tracepoint %s/%s: %w", tpSpec.Group, tpSpec.Name, err)
+			}
+
+			if primaryProg == nil {
+				primaryProg = prog
+				primaryProgName = progName
+			}
+			programs[progName] = prog
+			links = append(links, tp)
+		}
+	} else {
+		progName, prog := selectTracepointProgram(collection.Programs)
+		if prog == nil {
+			collection.Close()
+			return nil, fmt.Errorf("no tracepoint program found in %s", def.Name)
+		}
+
+		tp, err := link.Tracepoint(def.TracepointGroup, def.TracepointName, prog, nil)
+		if err != nil {
+			collection.Close()
+			return nil, fmt.Errorf("attach tracepoint %s/%s: %w", def.TracepointGroup, def.TracepointName, err)
+		}
+		primaryProg = prog
+		primaryProgName = progName
+		programs[progName] = prog
+		links = []link.Link{tp}
 	}
 
 	mapName, eventMap := selectEventMap(collection.Maps, def.MapName)
@@ -232,7 +308,11 @@ func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions)
 
 	reader, err := createReader(eventMap, def, opts, logger)
 	if err != nil {
-		tp.Close()
+		for _, lnk := range links {
+			if lnk != nil {
+				_ = lnk.Close()
+			}
+		}
 		collection.Close()
 		return nil, fmt.Errorf("create event reader: %w", err)
 	}
@@ -240,19 +320,54 @@ func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions)
 	if logger != nil {
 		logger.Info("loaded eBPF program",
 			zap.String("program", def.Name),
-			zap.String("section", progName),
+			zap.String("section", primaryProgName),
 			zap.String("map", mapName),
-			zap.String("tracepoint", fmt.Sprintf("%s/%s", def.TracepointGroup, def.TracepointName)),
+			zap.Int("tracepoints", len(links)),
 		)
 	}
 
 	return &ProgramSet{
-		Program: prog,
-		Maps:    map[string]*ebpf.Map{mapName: eventMap},
-		Reader:  reader,
-		Links:   []link.Link{tp},
-		Logger:  logger,
+		Program:  primaryProg,
+		Programs: programs,
+		Maps:     collection.Maps,
+		Reader:   reader,
+		Links:    links,
+		Logger:   logger,
 	}, nil
+}
+
+// ANCHOR: Tracepoint program selection - Feature: multi-tracepoint attach - Mar 24, 2026
+// Selects the program matching a specific tracepoint group/name.
+func selectTracepointProgramFor(programs map[string]*ebpf.Program, group, name string) (string, *ebpf.Program) {
+	if programs == nil {
+		return "", nil
+	}
+
+	expected := fmt.Sprintf("tracepoint__%s__%s", group, name)
+	if prog, ok := programs[expected]; ok {
+		return expected, prog
+	}
+
+	alt := fmt.Sprintf("tracepoint/%s/%s", group, name)
+	if prog, ok := programs[alt]; ok {
+		return alt, prog
+	}
+
+	var candidateName string
+	var candidate *ebpf.Program
+	count := 0
+	for progName, prog := range programs {
+		if prog != nil && prog.Type() == ebpf.TracePoint {
+			candidateName = progName
+			candidate = prog
+			count++
+		}
+	}
+	if count == 1 {
+		return candidateName, candidate
+	}
+
+	return "", nil
 }
 
 // ANCHOR: Tracepoint program selection - Utility: pick tracepoint program - Mar 23, 2026
@@ -485,8 +600,20 @@ func (ps *ProgramSet) Close() error {
 		}
 	}
 
-	// Close program
-	if ps.Program != nil {
+	// ANCHOR: Close all eBPF programs - Feature: multi-program cleanup - Mar 24, 2026
+	// Ensures every attached tracepoint program is released on shutdown.
+	// Falls back to single-program close for legacy program sets.
+	// Close programs
+	if len(ps.Programs) > 0 {
+		for name, prog := range ps.Programs {
+			if prog == nil {
+				continue
+			}
+			if err := prog.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close program %s: %w", name, err))
+			}
+		}
+	} else if ps.Program != nil {
 		if err := ps.Program.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close program: %w", err))
 		}
