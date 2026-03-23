@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -36,15 +37,44 @@ func TestBuildPodSpecEventsMultiContainer(t *testing.T) {
 			Namespace: "default",
 			UID:       types.UID("pod-uid"),
 			Labels:    map[string]string{"app": "web"},
+			Annotations: map[string]string{
+				"image-scan-status": "scanned",
+				"image-signed":      "true",
+			},
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: "sa-1",
 			HostNetwork:        true,
+			ImagePullSecrets: []corev1.LocalObjectReference{
+				{Name: "registry-credentials"},
+			},
+			SecurityContext: &corev1.PodSecurityContext{
+				Sysctls: []corev1.Sysctl{
+					{Name: "kernel.dmesg_restrict", Value: "1"},
+				},
+			},
+			Volumes: []corev1.Volume{
+				{
+					Name: "host-vol",
+					VolumeSource: corev1.VolumeSource{
+						HostPath: &corev1.HostPathVolumeSource{Path: "/data"},
+					},
+				},
+				{
+					Name: "scratch-vol",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
+			},
 			Containers: []corev1.Container{
 				{
 					Name:            "c1",
 					Image:           "docker.io/library/nginx:1.2",
 					ImagePullPolicy: corev1.PullAlways,
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "host-vol", MountPath: "/data"},
+					},
 					SecurityContext: &corev1.SecurityContext{
 						Privileged:               &priv,
 						AllowPrivilegeEscalation: &allowEsc,
@@ -66,13 +96,16 @@ func TestBuildPodSpecEventsMultiContainer(t *testing.T) {
 				{
 					Name:  "c2",
 					Image: "ghcr.io/example/app:2.0",
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "scratch-vol", MountPath: "/tmp"},
+					},
 				},
 			},
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning},
 	}
 
-	events := agent.buildPodSpecEvents(pod)
+	events := agent.buildPodSpecEvents(context.Background(), pod)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -107,6 +140,24 @@ func TestBuildPodSpecEventsMultiContainer(t *testing.T) {
 	if c1.Container.CPULimit != "500m" {
 		t.Errorf("expected cpu limit 500m, got %q", c1.Container.CPULimit)
 	}
+	if c1.Container.StorageRequest != "1Gi" {
+		t.Errorf("expected storage request 1Gi, got %q", c1.Container.StorageRequest)
+	}
+	if c1.Container.ImageScanStatus != "scanned" {
+		t.Errorf("expected image scan status scanned, got %q", c1.Container.ImageScanStatus)
+	}
+	if !c1.Container.ImageSigned {
+		t.Errorf("expected image signed true")
+	}
+	if !c1.Container.ImageRegistryAuth {
+		t.Errorf("expected image registry auth true")
+	}
+	if c1.Container.VolumeType != "hostPath" {
+		t.Errorf("expected volume type hostPath, got %q", c1.Container.VolumeType)
+	}
+	if !c1.Container.KernelHardening {
+		t.Errorf("expected kernel hardening true")
+	}
 
 	c2 := byName["c2"]
 	if c2 == nil {
@@ -117,6 +168,18 @@ func TestBuildPodSpecEventsMultiContainer(t *testing.T) {
 	}
 	if c2.Kubernetes.ImageTag != "2.0" {
 		t.Errorf("expected image tag 2.0, got %q", c2.Kubernetes.ImageTag)
+	}
+	if c2.Container.ImageScanStatus != "scanned" {
+		t.Errorf("expected image scan status scanned, got %q", c2.Container.ImageScanStatus)
+	}
+	if !c2.Container.ImageSigned {
+		t.Errorf("expected image signed true")
+	}
+	if !c2.Container.ImageRegistryAuth {
+		t.Errorf("expected image registry auth true")
+	}
+	if c2.Container.VolumeType != "emptyDir" {
+		t.Errorf("expected volume type emptyDir, got %q", c2.Container.VolumeType)
 	}
 }
 

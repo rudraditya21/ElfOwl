@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -103,7 +104,7 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 	var seccompProfile, selinuxLevel, apparmorProfile string
 	var allowPrivilegeEscalation, privileged, readOnlyRootFilesystem bool
 	var runAsRootContainer bool
-	var memoryLimit, memoryRequest, cpuLimit, cpuRequest string
+	var memoryLimit, memoryRequest, cpuLimit, cpuRequest, storageRequest string
 
 	// Pod-level security context
 	if pod.Spec.SecurityContext != nil {
@@ -137,8 +138,13 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 	// Container-level security context (from first container)
 	// ANCHOR: Extract container-level RunAsNonRoot to override pod-level setting - Phase 2.2 fix, Dec 26, 2025
 	// Container-level security context takes precedence over pod-level for runAsNonRoot
+	primaryContainer := corev1.Container{}
+	hasContainer := false
+
 	if len(pod.Spec.Containers) > 0 {
 		container := pod.Spec.Containers[0]
+		primaryContainer = container
+		hasContainer = true
 		containerName = container.Name
 		if container.SecurityContext != nil {
 			if container.SecurityContext.AllowPrivilegeEscalation != nil {
@@ -178,15 +184,44 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 			if cpu, ok := container.Resources.Requests["cpu"]; ok {
 				cpuRequest = cpu.String()
 			}
+			if storage, ok := container.Resources.Requests["ephemeral-storage"]; ok {
+				storageRequest = storage.String()
+			}
 		}
 	}
+
+	// ANCHOR: Compliance field extraction for pod metadata - Feature: image/volume/kernel signals - Mar 22, 2026
+	// Derives CIS inputs from annotations, imagePullSecrets, volume mounts, and sysctls.
+	serviceAccountName := pod.Spec.ServiceAccountName
+	if serviceAccountName == "" {
+		serviceAccountName = "default"
+	}
+
+	var serviceAccount *corev1.ServiceAccount
+	if c.clientset != nil && serviceAccountName != "" {
+		if sa, err := c.clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, serviceAccountName, metav1.GetOptions{}); err == nil {
+			serviceAccount = sa
+		}
+	}
+
+	imageScanStatus := ImageScanStatusFromPod(pod, containerName)
+	imageSigned := false
+	if signed, ok := ImageSignedFromPod(pod, containerName); ok {
+		imageSigned = signed
+	}
+	imageRegistryAuth := ImageRegistryAuthFromPod(pod, containerName, serviceAccount)
+	volumeType := ""
+	if hasContainer {
+		volumeType = VolumeTypeForContainer(pod, primaryContainer)
+	}
+	kernelHardening := KernelHardeningFromPod(pod)
 
 	// Create PodMetadata with extracted security context
 	metadata := &PodMetadata{
 		Name:                     pod.Name,
 		Namespace:                pod.Namespace,
 		UID:                      string(pod.UID),
-		ServiceAccount:           pod.Spec.ServiceAccountName,
+		ServiceAccount:           serviceAccountName,
 		Image:                    image,
 		ImageRegistry:            "", // Will be parsed by enricher
 		ImageTag:                 "", // Will be parsed by enricher
@@ -211,6 +246,14 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 		CPULimit:                 cpuLimit,
 		CPURequest:               cpuRequest,
 		ImagePullPolicy:          imagePullPolicy,
+		// ANCHOR: Compliance signal fields from pod spec - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Populate CIS fields from annotations, imagePullSecrets, volumes, and sysctls.
+		ImageScanStatus:   imageScanStatus,
+		ImageRegistryAuth: imageRegistryAuth,
+		ImageSigned:       imageSigned,
+		StorageRequest:    storageRequest,
+		VolumeType:        volumeType,
+		KernelHardening:   kernelHardening,
 	}
 
 	// Store in cache
@@ -717,13 +760,22 @@ type PodMetadata struct {
 	HostPID                  bool
 
 	// Resource requests and limits (from first container)
-	MemoryLimit   string
-	MemoryRequest string
-	CPULimit      string
-	CPURequest    string
+	MemoryLimit    string
+	MemoryRequest  string
+	CPULimit       string
+	CPURequest     string
+	StorageRequest string
 
 	// Image pull policy (from first container)
 	ImagePullPolicy string
+
+	// ANCHOR: Compliance signal fields for CIS controls - Mar 22, 2026
+	// Fields populated from annotations, imagePullSecrets, volume mounts, and sysctls.
+	ImageScanStatus   string
+	ImageRegistryAuth bool
+	ImageSigned       bool
+	VolumeType        string
+	KernelHardening   bool
 }
 
 type OwnerReference struct {

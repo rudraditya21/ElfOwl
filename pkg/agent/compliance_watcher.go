@@ -11,10 +11,12 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 
 	"github.com/udyansh/elf-owl/pkg/enrichment"
+	"github.com/udyansh/elf-owl/pkg/kubernetes"
 )
 
 func (a *Agent) startComplianceWatchers(ctx context.Context) {
@@ -81,7 +83,7 @@ func (a *Agent) onPodEvent(ctx context.Context, obj interface{}, ready <-chan st
 	}
 
 	// ANCHOR: Multi-container pod_spec_check events - Bugfix: per-container compliance - Mar 22, 2026
-	events := a.buildPodSpecEvents(pod)
+	events := a.buildPodSpecEvents(ctx, pod)
 	for _, event := range events {
 		a.handleComplianceEvent(ctx, event)
 	}
@@ -109,14 +111,16 @@ func (a *Agent) onNetworkPolicyEvent(ctx context.Context, obj interface{}, ready
 
 // ANCHOR: Pod spec compliance event builder - Feature: CIS pod_spec_check - Mar 22, 2026
 // Extracts security context and resource settings from pod specs for CIS rules.
-func (a *Agent) buildPodSpecEvents(pod *corev1.Pod) []*enrichment.EnrichedEvent {
+func (a *Agent) buildPodSpecEvents(ctx context.Context, pod *corev1.Pod) []*enrichment.EnrichedEvent {
 	if pod == nil || len(pod.Spec.Containers) == 0 {
 		return nil
 	}
 
+	serviceAccount := a.resolveServiceAccount(ctx, pod)
+
 	events := make([]*enrichment.EnrichedEvent, 0, len(pod.Spec.Containers))
 	for _, container := range pod.Spec.Containers {
-		event := a.buildPodSpecEventForContainer(pod, container)
+		event := a.buildPodSpecEventForContainer(pod, container, serviceAccount)
 		if event != nil {
 			events = append(events, event)
 		}
@@ -124,7 +128,7 @@ func (a *Agent) buildPodSpecEvents(pod *corev1.Pod) []*enrichment.EnrichedEvent 
 	return events
 }
 
-func (a *Agent) buildPodSpecEventForContainer(pod *corev1.Pod, container corev1.Container) *enrichment.EnrichedEvent {
+func (a *Agent) buildPodSpecEventForContainer(pod *corev1.Pod, container corev1.Container, serviceAccount *corev1.ServiceAccount) *enrichment.EnrichedEvent {
 	if pod == nil {
 		return nil
 	}
@@ -193,6 +197,15 @@ func (a *Agent) buildPodSpecEventForContainer(pod *corev1.Pod, container corev1.
 		}
 	}
 
+	imageScanStatus := kubernetes.ImageScanStatusFromPod(pod, containerName)
+	imageSigned := false
+	if signed, ok := kubernetes.ImageSignedFromPod(pod, containerName); ok {
+		imageSigned = signed
+	}
+	imageRegistryAuth := kubernetes.ImageRegistryAuthFromPod(pod, containerName, serviceAccount)
+	volumeType := kubernetes.VolumeTypeForContainer(pod, container)
+	kernelHardening := kubernetes.KernelHardeningFromPod(pod)
+
 	containerCtx := &enrichment.ContainerContext{
 		ContainerName:            containerName,
 		Privileged:               privileged,
@@ -211,6 +224,13 @@ func (a *Agent) buildPodSpecEventForContainer(pod *corev1.Pod, container corev1.
 		MemoryRequest:            memoryRequest,
 		CPURequest:               cpuRequest,
 		StorageRequest:           storageRequest,
+		// ANCHOR: Compliance fields for pod_spec_check - Feature: image/volume/kernel signals - Mar 22, 2026
+		// Populate CIS control inputs from pod annotations, imagePullSecrets, volume mounts, and sysctls.
+		ImageScanStatus:   imageScanStatus,
+		ImageRegistryAuth: imageRegistryAuth,
+		ImageSigned:       imageSigned,
+		VolumeType:        volumeType,
+		KernelHardening:   kernelHardening,
 	}
 
 	return &enrichment.EnrichedEvent{
@@ -260,6 +280,26 @@ func networkPolicyFromObject(obj interface{}) *networkingv1.NetworkPolicy {
 		}
 	}
 	return nil
+}
+
+// ANCHOR: Service account lookup for registry auth - Feature: CIS_4.3.5 inputs - Mar 22, 2026
+// Retrieves ServiceAccount imagePullSecrets when pod-level secrets are absent.
+func (a *Agent) resolveServiceAccount(ctx context.Context, pod *corev1.Pod) *corev1.ServiceAccount {
+	if pod == nil || a.K8sClient == nil || a.K8sClient.GetClientset() == nil {
+		return nil
+	}
+
+	serviceAccountName := pod.Spec.ServiceAccountName
+	if serviceAccountName == "" {
+		serviceAccountName = "default"
+	}
+
+	serviceAccount, err := a.K8sClient.GetClientset().CoreV1().ServiceAccounts(pod.Namespace).Get(ctx, serviceAccountName, metav1.GetOptions{})
+	if err != nil {
+		return nil
+	}
+
+	return serviceAccount
 }
 
 func apparmorProfile(pod *corev1.Pod, containerName string) string {
