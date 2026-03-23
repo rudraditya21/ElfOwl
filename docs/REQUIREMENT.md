@@ -47,16 +47,21 @@ In the unified CloudArmour model, elf-owl acts as a **single-replica, read-only 
 
 ## Known limitations
 
-ANCHOR: Known limitations - Compliance fields not populated yet - Mar 22, 2026
+ANCHOR: Known limitations - Compliance fields depend on pod signals - Mar 22, 2026
 
-Some CIS controls rely on fields that are not yet populated in the current pipeline. These may
-result in **unknown == violation** behavior until those fields are implemented. Examples include:
+Some CIS controls rely on fields that are populated **only when specific pod signals exist**.
+If those signals are absent, the fields default to empty/false and may be interpreted as a
+violation, so treat these as **signal missing** rather than definitive failures in such cases.
 
-- `container.image_scan_status`, `container.image_signed`, `container.image_registry_auth`
-- `container.volume_type`, `container.storage_request`, `container.kernel_hardening`
+Signal sources include:
+- Pod annotations/labels `image-scan-status` and `image-signed` for image scanning and signature status.
+- `imagePullSecrets` on the pod or its ServiceAccount for registry authentication.
+- Container volume mounts to determine `container.volume_type` (e.g., hostPath/emptyDir/local).
+- Pod `securityContext.sysctls` (kernel.*) for kernel hardening.
+- Ephemeral storage requests for `container.storage_request`.
 
 This does **not** affect the read-only model, but it does affect the accuracy of those specific
-controls until the underlying signals are implemented.
+controls until the underlying signals are consistently provided.
 
 ---
 
@@ -83,4 +88,3 @@ It does **not**:
 - **Separation of concerns:** elf-owl focuses on compliance signals, not remediation.
 
 ---
-
