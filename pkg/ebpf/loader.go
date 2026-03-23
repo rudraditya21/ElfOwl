@@ -5,10 +5,17 @@
 package ebpf
 
 import (
+	"bytes"
 	"embed"
+	"errors"
 	"fmt"
+	"os"
+	"time"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/perf"
+	"github.com/cilium/ebpf/ringbuf"
 	"go.uber.org/zap"
 )
 
@@ -43,8 +50,43 @@ type ProgramSet struct {
 	// nil if program doesn't produce events (e.g., helper-only programs)
 	Reader Reader
 
+	// ANCHOR: ProgramSet link handles - Feature: tracepoint detach - Mar 23, 2026
+	// Track attached links so programs are cleanly detached on shutdown.
+	Links []link.Link
+
 	// Logger for diagnostics
 	Logger *zap.Logger
+}
+
+// ProgramConfig controls per-program loading and reader settings.
+type ProgramConfig struct {
+	Enabled    bool
+	BufferSize int
+	Timeout    time.Duration
+}
+
+// PerfBufferOptions controls perf buffer reader configuration.
+type PerfBufferOptions struct {
+	Enabled     bool
+	PageCount   int
+	LostHandler bool
+}
+
+// RingBufferOptions controls ring buffer reader configuration.
+type RingBufferOptions struct {
+	Enabled bool
+	Size    int
+}
+
+// LoadOptions defines which programs to load and how to configure readers.
+type LoadOptions struct {
+	Process    ProgramConfig
+	Network    ProgramConfig
+	File       ProgramConfig
+	Capability ProgramConfig
+	DNS        ProgramConfig
+	PerfBuffer PerfBufferOptions
+	RingBuffer RingBufferOptions
 }
 
 // ============================================================================
@@ -76,6 +118,226 @@ type Collection struct {
 	bytecode map[string][]byte
 }
 
+type programDefinition struct {
+	Name            string
+	Description     string
+	MapName         string
+	TracepointGroup string
+	TracepointName  string
+	Config          ProgramConfig
+}
+
+// DefaultLoadOptions enables all programs with perf buffers by default.
+func DefaultLoadOptions() LoadOptions {
+	return LoadOptions{
+		Process:    ProgramConfig{Enabled: true},
+		Network:    ProgramConfig{Enabled: true},
+		File:       ProgramConfig{Enabled: true},
+		Capability: ProgramConfig{Enabled: true},
+		DNS:        ProgramConfig{Enabled: true},
+		PerfBuffer: PerfBufferOptions{Enabled: true, PageCount: 64, LostHandler: true},
+		RingBuffer: RingBufferOptions{Enabled: false, Size: 65536},
+	}
+}
+
+func programDefinitions(opts LoadOptions) []programDefinition {
+	return []programDefinition{
+		{
+			Name:            ProcessProgramName,
+			Description:     "process execution",
+			MapName:         ProcessEventsMap,
+			TracepointGroup: "sched",
+			TracepointName:  "sched_process_exec",
+			Config:          opts.Process,
+		},
+		{
+			Name:            NetworkProgramName,
+			Description:     "network connections",
+			MapName:         NetworkEventsMap,
+			TracepointGroup: "tcp",
+			TracepointName:  "tcp_connect",
+			Config:          opts.Network,
+		},
+		{
+			Name:            FileProgramName,
+			Description:     "file access",
+			MapName:         FileEventsMap,
+			TracepointGroup: "syscalls",
+			TracepointName:  "sys_enter_openat",
+			Config:          opts.File,
+		},
+		{
+			Name:            CapabilityProgramName,
+			Description:     "linux capabilities",
+			MapName:         CapabilityEventsMap,
+			TracepointGroup: "capability",
+			TracepointName:  "cap_capable",
+			Config:          opts.Capability,
+		},
+		{
+			Name:            DNSProgramName,
+			Description:     "DNS queries",
+			MapName:         DNSEventsMap,
+			TracepointGroup: "udp",
+			TracepointName:  "udp_sendmsg",
+			Config:          opts.DNS,
+		},
+	}
+}
+
+// ANCHOR: Load single eBPF program set - Feature: tracepoint attach - Mar 23, 2026
+// Parses bytecode, loads the collection, attaches tracepoint, and returns ProgramSet.
+func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions) (*ProgramSet, error) {
+	data, err := GetProgram(def.Name)
+	if err != nil {
+		return nil, fmt.Errorf("get bytecode: %w", err)
+	}
+
+	if len(data) < 64 {
+		return nil, fmt.Errorf("bytecode too small for valid ELF")
+	}
+
+	if data[0] != 0x7f || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
+		return nil, fmt.Errorf("invalid ELF magic in bytecode")
+	}
+
+	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("parse bytecode: %w", err)
+	}
+
+	collection, err := ebpf.NewCollection(spec)
+	if err != nil {
+		return nil, fmt.Errorf("load collection: %w", err)
+	}
+
+	progName, prog := selectTracepointProgram(collection.Programs)
+	if prog == nil {
+		collection.Close()
+		return nil, fmt.Errorf("no tracepoint program found in %s", def.Name)
+	}
+
+	tp, err := link.Tracepoint(def.TracepointGroup, def.TracepointName, prog, nil)
+	if err != nil {
+		collection.Close()
+		return nil, fmt.Errorf("attach tracepoint %s/%s: %w", def.TracepointGroup, def.TracepointName, err)
+	}
+
+	mapName, eventMap := selectEventMap(collection.Maps, def.MapName)
+	if eventMap == nil {
+		tp.Close()
+		collection.Close()
+		return nil, fmt.Errorf("event map %s not found", def.MapName)
+	}
+
+	reader, err := createReader(eventMap, def, opts, logger)
+	if err != nil {
+		tp.Close()
+		collection.Close()
+		return nil, fmt.Errorf("create event reader: %w", err)
+	}
+
+	if logger != nil {
+		logger.Info("loaded eBPF program",
+			zap.String("program", def.Name),
+			zap.String("section", progName),
+			zap.String("map", mapName),
+			zap.String("tracepoint", fmt.Sprintf("%s/%s", def.TracepointGroup, def.TracepointName)),
+		)
+	}
+
+	return &ProgramSet{
+		Program: prog,
+		Maps:    map[string]*ebpf.Map{mapName: eventMap},
+		Reader:  reader,
+		Links:   []link.Link{tp},
+		Logger:  logger,
+	}, nil
+}
+
+// ANCHOR: Tracepoint program selection - Utility: pick tracepoint program - Mar 23, 2026
+// Prefers tracepoint program types and falls back to any available program.
+func selectTracepointProgram(programs map[string]*ebpf.Program) (string, *ebpf.Program) {
+	for name, prog := range programs {
+		if prog != nil && prog.Type() == ebpf.TracePoint {
+			return name, prog
+		}
+	}
+	for name, prog := range programs {
+		if prog != nil {
+			return name, prog
+		}
+	}
+	return "", nil
+}
+
+// ANCHOR: Event map selection - Utility: perf/ringbuf map lookup - Mar 23, 2026
+// Chooses the preferred map name or the first perf/ringbuf map in the collection.
+func selectEventMap(maps map[string]*ebpf.Map, preferred string) (string, *ebpf.Map) {
+	if m, ok := maps[preferred]; ok {
+		return preferred, m
+	}
+	for name, m := range maps {
+		if m == nil {
+			continue
+		}
+		if m.Type() == ebpf.PerfEventArray || m.Type() == ebpf.RingBuf {
+			return name, m
+		}
+	}
+	return "", nil
+}
+
+// ANCHOR: Event reader creation - Feature: perf/ringbuf reader wiring - Mar 23, 2026
+// Builds a reader for the event map using perf or ring buffer settings.
+func createReader(eventMap *ebpf.Map, def programDefinition, opts LoadOptions, logger *zap.Logger) (Reader, error) {
+	if eventMap == nil {
+		return nil, nil
+	}
+
+	switch eventMap.Type() {
+	case ebpf.RingBuf:
+		if !opts.RingBuffer.Enabled {
+			return nil, fmt.Errorf("ring buffer reader disabled")
+		}
+		reader, err := ringbuf.NewReader(eventMap)
+		if err != nil {
+			return nil, fmt.Errorf("create ringbuf reader: %w", err)
+		}
+		return &RingBufferReader{
+			reader:  reader,
+			timeout: def.Config.Timeout,
+			logger:  logger,
+		}, nil
+	case ebpf.PerfEventArray:
+		if !opts.PerfBuffer.Enabled {
+			return nil, fmt.Errorf("perf buffer reader disabled")
+		}
+		reader, err := perf.NewReader(eventMap, perfBufferSize(def, opts))
+		if err != nil {
+			return nil, fmt.Errorf("create perf reader: %w", err)
+		}
+		return &PerfBufferReader{
+			reader:      reader,
+			timeout:     def.Config.Timeout,
+			lostHandler: opts.PerfBuffer.LostHandler,
+			logger:      logger,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported event map type: %s", eventMap.Type())
+	}
+}
+
+func perfBufferSize(def programDefinition, opts LoadOptions) int {
+	if def.Config.BufferSize > 0 {
+		return def.Config.BufferSize
+	}
+	if opts.PerfBuffer.PageCount > 0 {
+		return opts.PerfBuffer.PageCount * os.Getpagesize()
+	}
+	return 64 * os.Getpagesize()
+}
+
 // ============================================================================
 // LoadPrograms - Main entry point for loading eBPF programs
 // ============================================================================
@@ -90,78 +352,45 @@ type Collection struct {
 // 4. Wrap in ProgramSet with Reader for event streaming
 // 5. Return Collection for agent to use
 func LoadPrograms(logger *zap.Logger) (*Collection, error) {
-	// ANCHOR: Load all eBPF programs from bytecode - Dec 27, 2025
-	// Loads compiled ELF bytecode for all 5 monitors into kernel
+	return LoadProgramsWithOptions(logger, DefaultLoadOptions())
+}
 
+// ANCHOR: eBPF program loading and tracepoint attach - Feature: kernel attach - Mar 23, 2026
+// Loads ELF bytecode, attaches tracepoints, and returns program sets for monitors.
+func LoadProgramsWithOptions(logger *zap.Logger, opts LoadOptions) (*Collection, error) {
 	coll := &Collection{
 		Logger:   logger,
 		bytecode: make(map[string][]byte),
 	}
 
-	// Load bytecode for each program from embedded files
-	logger.Info("loading eBPF programs from embedded bytecode")
-
-	// ANCHOR: Load all eBPF programs - Dec 27, 2025
-	// Verifies all bytecode files are available and can be parsed
-	// Actual kernel loading requires CAP_BPF, CAP_PERFMON, and valid kernel eBPF support
-
-	programs := map[string]string{
-		ProcessProgramName:    "process execution",
-		NetworkProgramName:    "network connections",
-		FileProgramName:       "file access",
-		CapabilityProgramName: "Linux capabilities",
-		DNSProgramName:        "DNS queries",
+	if logger != nil {
+		logger.Info("loading eBPF programs from embedded bytecode")
 	}
 
-	loadedCount := 0
-	for progName, progDesc := range programs {
-		data, err := GetProgram(progName)
+	definitions := programDefinitions(opts)
+	for _, def := range definitions {
+		if !def.Config.Enabled {
+			continue
+		}
+
+		programSet, err := loadProgramSet(logger, def, opts)
 		if err != nil {
-			logger.Warn("program bytecode not available",
-				zap.String("program", progName),
-				zap.String("description", progDesc),
-				zap.Error(err))
-			continue
+			return nil, fmt.Errorf("load %s: %w", def.Name, err)
 		}
 
-		// Verify bytecode is valid ELF format
-		if len(data) < 64 {
-			logger.Warn("bytecode too small for valid ELF",
-				zap.String("program", progName),
-				zap.Int("size", len(data)))
-			continue
+		switch def.Name {
+		case ProcessProgramName:
+			coll.Process = programSet
+		case NetworkProgramName:
+			coll.Network = programSet
+		case FileProgramName:
+			coll.File = programSet
+		case CapabilityProgramName:
+			coll.Capability = programSet
+		case DNSProgramName:
+			coll.DNS = programSet
 		}
-
-		// Check ELF magic number
-		if data[0] != 0x7f || data[1] != 'E' || data[2] != 'L' || data[3] != 'F' {
-			logger.Warn("invalid ELF magic in bytecode",
-				zap.String("program", progName))
-			continue
-		}
-
-		// Log successful bytecode verification
-		logger.Info("program bytecode verified",
-			zap.String("program", progName),
-			zap.String("description", progDesc),
-			zap.Int("bytecodeSize", len(data)))
-
-		loadedCount++
-
-		// TODO (Phase 3): Actually load into kernel
-		// Requires:
-		// 1. Write bytecode to temp file (LoadCollectionSpec takes file path)
-		// 2. Parse with ebpf.LoadCollectionSpec(tmpFile)
-		// 3. Load programs via spec.LoadAndAssign()
-		// 4. Attach programs to kernel tracepoints
-		// 5. Create ProgramSet with event readers
-		//
-		// For now, we verify bytecode availability and format
 	}
-
-	logger.Info("eBPF program loading verification complete",
-		zap.Int("loaded", loadedCount),
-		zap.Int("total", len(programs)),
-		zap.String("note", "Phase 3 will implement actual kernel loading"))
 
 	return coll, nil
 }
@@ -233,6 +462,17 @@ func (ps *ProgramSet) Close() error {
 	if ps.Reader != nil {
 		if err := ps.Reader.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("close reader: %w", err))
+		}
+	}
+
+	// ANCHOR: Detach eBPF links before closing programs - Safety: avoid dangling tracepoints - Mar 23, 2026
+	// Close all attached links to detach programs from tracepoints.
+	for _, lnk := range ps.Links {
+		if lnk == nil {
+			continue
+		}
+		if err := lnk.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close link: %w", err))
 		}
 	}
 
@@ -322,9 +562,16 @@ func attachTracepoint(prog *ebpf.Program, group, name string) error {
 // ANCHOR: Perf Buffer Reader - Phase 2: Monitor Implementation - Dec 27, 2025
 // Reads events from per-CPU perf buffers (available on all eBPF kernels)
 type PerfBufferReader struct {
-	// TODO (Phase 3): Integrate cilium/ebpf perf.Reader
 	// perf.Reader handles multi-CPU perf event arrays
-	// Each CPU has page-backed mmap'd buffer
+	reader *perf.Reader
+
+	// Optional timeout for Read operations.
+	timeout time.Duration
+
+	// Log dropped samples when LostSamples > 0.
+	lostHandler bool
+
+	logger *zap.Logger
 	closed bool
 }
 
@@ -334,18 +581,48 @@ func (pr *PerfBufferReader) Read() ([]byte, error) {
 		return nil, fmt.Errorf("reader closed")
 	}
 
-	// TODO (Phase 3): Implement actual perf buffer reading
-	// Will use cilium/ebpf perf.Reader to aggregate events from all CPUs
-	// Blocks until event available or timeout (5 seconds)
-	// Returns raw event bytes for parsing by monitor
+	if pr.reader == nil {
+		return nil, fmt.Errorf("perf reader not initialized")
+	}
 
-	return nil, fmt.Errorf("Phase 3 implementation: perf buffer event streaming")
+	if pr.timeout > 0 {
+		pr.reader.SetDeadline(time.Now().Add(pr.timeout))
+	} else {
+		pr.reader.SetDeadline(time.Time{})
+	}
+
+	record, err := pr.reader.Read()
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if record.LostSamples > 0 && pr.lostHandler && pr.logger != nil {
+		pr.logger.Warn("perf buffer lost samples",
+			zap.Uint64("lost_samples", record.LostSamples),
+		)
+	}
+
+	if len(record.RawSample) == 0 {
+		return nil, nil
+	}
+
+	payload := make([]byte, len(record.RawSample))
+	copy(payload, record.RawSample)
+	return payload, nil
 }
 
 // Close closes the perf buffer reader
 func (pr *PerfBufferReader) Close() error {
 	pr.closed = true
-	// TODO (Phase 3): Close perf.Reader and unmap buffers
+	if pr.reader == nil {
+		return nil
+	}
+	if err := pr.reader.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
 	return nil
 }
 
@@ -354,9 +631,13 @@ func (pr *PerfBufferReader) Close() error {
 // ANCHOR: Ring Buffer Reader - Phase 2: Monitor Implementation - Dec 27, 2025
 // Reads events from single shared ring buffer (preferred for modern kernels)
 type RingBufferReader struct {
-	// TODO (Phase 3): Integrate cilium/ebpf ringbuf.Reader
 	// ringbuf.Reader handles single shared ring buffer
-	// More efficient than perf buffers
+	reader *ringbuf.Reader
+
+	// Optional timeout for Read operations.
+	timeout time.Duration
+
+	logger *zap.Logger
 	closed bool
 }
 
@@ -366,17 +647,41 @@ func (rr *RingBufferReader) Read() ([]byte, error) {
 		return nil, fmt.Errorf("reader closed")
 	}
 
-	// TODO (Phase 3): Implement actual ring buffer reading
-	// Will use cilium/ebpf ringbuf.Reader to read events
-	// Blocks until event available or timeout (5 seconds)
-	// Returns raw event bytes for parsing by monitor
+	if rr.reader == nil {
+		return nil, fmt.Errorf("ringbuf reader not initialized")
+	}
 
-	return nil, fmt.Errorf("Phase 3 implementation: ring buffer event streaming")
+	if rr.timeout > 0 {
+		rr.reader.SetDeadline(time.Now().Add(rr.timeout))
+	} else {
+		rr.reader.SetDeadline(time.Time{})
+	}
+
+	record, err := rr.reader.Read()
+	if err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if len(record.RawSample) == 0 {
+		return nil, nil
+	}
+
+	payload := make([]byte, len(record.RawSample))
+	copy(payload, record.RawSample)
+	return payload, nil
 }
 
 // Close closes the ring buffer reader
 func (rr *RingBufferReader) Close() error {
 	rr.closed = true
-	// TODO (Phase 3): Close ringbuf.Reader
+	if rr.reader == nil {
+		return nil
+	}
+	if err := rr.reader.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
 	return nil
 }

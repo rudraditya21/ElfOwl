@@ -253,6 +253,68 @@ func (a *Agent) Start(ctx context.Context) error {
 		zap.String("nodeName", a.Config.Agent.NodeName),
 	)
 
+	if a.Config.Agent.EBPF.Enabled {
+		// ANCHOR: Load eBPF programs before starting monitors - Feature: kernel attach - Mar 23, 2026
+		// Replace placeholder ProgramSets with real kernel-attached programs and readers.
+		loadOpts := ebpf.LoadOptions{
+			Process: ebpf.ProgramConfig{
+				Enabled:    a.Config.Agent.EBPF.Process.Enabled,
+				BufferSize: a.Config.Agent.EBPF.Process.BufferSize,
+				Timeout:    a.Config.Agent.EBPF.Process.Timeout,
+			},
+			Network: ebpf.ProgramConfig{
+				Enabled:    a.Config.Agent.EBPF.Network.Enabled,
+				BufferSize: a.Config.Agent.EBPF.Network.BufferSize,
+				Timeout:    a.Config.Agent.EBPF.Network.Timeout,
+			},
+			File: ebpf.ProgramConfig{
+				Enabled:    a.Config.Agent.EBPF.File.Enabled,
+				BufferSize: a.Config.Agent.EBPF.File.BufferSize,
+				Timeout:    a.Config.Agent.EBPF.File.Timeout,
+			},
+			Capability: ebpf.ProgramConfig{
+				Enabled:    a.Config.Agent.EBPF.Capability.Enabled,
+				BufferSize: a.Config.Agent.EBPF.Capability.BufferSize,
+				Timeout:    a.Config.Agent.EBPF.Capability.Timeout,
+			},
+			DNS: ebpf.ProgramConfig{
+				Enabled:    a.Config.Agent.EBPF.DNS.Enabled,
+				BufferSize: a.Config.Agent.EBPF.DNS.BufferSize,
+				Timeout:    a.Config.Agent.EBPF.DNS.Timeout,
+			},
+			PerfBuffer: ebpf.PerfBufferOptions{
+				Enabled:     a.Config.Agent.EBPF.PerfBuffer.Enabled,
+				PageCount:   a.Config.Agent.EBPF.PerfBuffer.PageCount,
+				LostHandler: a.Config.Agent.EBPF.PerfBuffer.LostHandler,
+			},
+			RingBuffer: ebpf.RingBufferOptions{
+				Enabled: a.Config.Agent.EBPF.RingBuffer.Enabled,
+				Size:    a.Config.Agent.EBPF.RingBuffer.Size,
+			},
+		}
+
+		collection, err := ebpf.LoadProgramsWithOptions(a.Logger, loadOpts)
+		if err != nil {
+			return fmt.Errorf("failed to load eBPF programs: %w", err)
+		}
+
+		if a.Config.Agent.EBPF.Process.Enabled && collection.Process != nil {
+			a.ProcessMonitor = ebpf.NewProcessMonitor(collection.Process, a.Logger)
+		}
+		if a.Config.Agent.EBPF.Network.Enabled && collection.Network != nil {
+			a.NetworkMonitor = ebpf.NewNetworkMonitor(collection.Network, a.Logger)
+		}
+		if a.Config.Agent.EBPF.DNS.Enabled && collection.DNS != nil {
+			a.DNSMonitor = ebpf.NewDNSMonitor(collection.DNS, a.Logger)
+		}
+		if a.Config.Agent.EBPF.File.Enabled && collection.File != nil {
+			a.FileMonitor = ebpf.NewFileMonitor(collection.File, a.Logger)
+		}
+		if a.Config.Agent.EBPF.Capability.Enabled && collection.Capability != nil {
+			a.CapabilityMonitor = ebpf.NewCapabilityMonitor(collection.Capability, a.Logger)
+		}
+	}
+
 	// ANCHOR: Start all cilium/ebpf monitors with context - Dec 27, 2025
 	// Each monitor manages its own lifecycle via context cancellation
 	if a.ProcessMonitor != nil {
