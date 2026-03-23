@@ -128,7 +128,11 @@ func (pm *ProcessMonitor) eventLoop(ctx context.Context) {
 			select {
 			case pm.eventChan <- enriched:
 				pm.logger.Debug("process event sent",
-					zap.Uint32("pid", procCtx.PID))
+					zap.Uint32("pid", procCtx.PID),
+					zap.Uint32("uid", procCtx.UID),
+					zap.Uint32("gid", procCtx.GID),
+					zap.String("filename", procCtx.Filename),
+					zap.String("command", procCtx.Command))
 			case <-ctx.Done():
 				return
 			case <-pm.stopChan:

@@ -135,7 +135,11 @@ func (nm *NetworkMonitor) eventLoop(ctx context.Context) {
 			case nm.eventChan <- enriched:
 				nm.logger.Debug("network event sent",
 					zap.Uint32("pid", evt.PID),
-					zap.String("dest", netCtx.DestinationIP))
+					zap.String("src", netCtx.SourceIP),
+					zap.Uint16("src_port", netCtx.SourcePort),
+					zap.String("dest", netCtx.DestinationIP),
+					zap.Uint16("dest_port", netCtx.DestinationPort),
+					zap.String("protocol", netCtx.Protocol))
 			case <-ctx.Done():
 				return
 			case <-nm.stopChan:

@@ -56,15 +56,17 @@ if [[ "$REBUILD" -eq 1 ]] || ! multipass exec "$VM_NAME" -- bash -lc "test -x '$
   "
 fi
 
-KCFG_EXPORT=""
+KCFG_ENV=""
 if [[ -n "$KUBECONFIG_PATH" ]]; then
-  KCFG_EXPORT="export KUBECONFIG='$KUBECONFIG_PATH';"
+  KCFG_ENV="KUBECONFIG=${KUBECONFIG_PATH} OWL_K8S_IN_CLUSTER=false"
 fi
 
 echo "[agent] Starting elf-owl..."
 multipass exec "$VM_NAME" -- bash -lc "
   set -euo pipefail
   sudo mkdir -p /var/log/elf-owl /var/run/elf-owl
+
+  # Stop previously tracked PID.
   if sudo test -f '$VM_PID_FILE'; then
     old_pid=\$(sudo cat '$VM_PID_FILE' || true)
     if [[ -n \"\${old_pid}\" ]] && sudo kill -0 \"\${old_pid}\" 2>/dev/null; then
@@ -73,8 +75,17 @@ multipass exec "$VM_NAME" -- bash -lc "
     fi
   fi
 
-  cd '$VM_PROJECT_DIR'
-  sudo bash -lc '${KCFG_EXPORT} export OWL_LOG_LEVEL=${LOG_LEVEL}; nohup ./elf-owl > ${VM_LOG_FILE} 2>&1 & echo \$! > ${VM_PID_FILE}'
+  # Stop any leftover elf-owl process not tracked by pid file.
+  extra_pids=\$(sudo pgrep -x elf-owl || true)
+  if [[ -n \"\${extra_pids}\" ]]; then
+    for pid in \${extra_pids}; do
+      sudo kill \"\${pid}\" || true
+    done
+    sleep 1
+  fi
+
+  # Start fresh agent process and persist the real process PID.
+  sudo bash -lc \"set -euo pipefail; cd '$VM_PROJECT_DIR'; env ${KCFG_ENV} OWL_LOG_LEVEL=${LOG_LEVEL} nohup ./elf-owl > ${VM_LOG_FILE} 2>&1 < /dev/null & echo \\\$! > ${VM_PID_FILE}\"
 "
 
 sleep 2

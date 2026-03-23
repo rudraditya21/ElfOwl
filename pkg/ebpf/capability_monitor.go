@@ -130,7 +130,9 @@ func (cm *CapabilityMonitor) eventLoop(ctx context.Context) {
 			case cm.eventChan <- enriched:
 				cm.logger.Debug("capability event sent",
 					zap.Uint32("pid", evt.PID),
-					zap.String("capability", capName))
+					zap.String("capability", capName),
+					zap.Uint8("check_type", evt.CheckType),
+					zap.String("syscall", string(bytes.TrimRight(evt.SyscallName[:], "\x00"))))
 			case <-ctx.Done():
 				return
 			case <-cm.stopChan:

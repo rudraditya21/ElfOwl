@@ -7,6 +7,7 @@ package agent
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -46,14 +47,14 @@ type LoggingConfig struct {
 // Defines Cilium/eBPF monitor settings (now the only monitor implementation)
 // Fully replaces goBPF with production-grade cilium/ebpf library
 type EBPFConfig struct {
-	Enabled     bool               `yaml:"enabled"`
-	Process     EBPFMonitorConfig  `yaml:"process"`
-	Network     EBPFMonitorConfig  `yaml:"network"`
-	DNS         EBPFMonitorConfig  `yaml:"dns"`
-	File        EBPFMonitorConfig  `yaml:"file"`
-	Capability  EBPFMonitorConfig  `yaml:"capability"`
-	PerfBuffer  PerfBufferConfig   `yaml:"perf_buffer"`
-	RingBuffer  RingBufferConfig   `yaml:"ring_buffer"`
+	Enabled    bool              `yaml:"enabled"`
+	Process    EBPFMonitorConfig `yaml:"process"`
+	Network    EBPFMonitorConfig `yaml:"network"`
+	DNS        EBPFMonitorConfig `yaml:"dns"`
+	File       EBPFMonitorConfig `yaml:"file"`
+	Capability EBPFMonitorConfig `yaml:"capability"`
+	PerfBuffer PerfBufferConfig  `yaml:"perf_buffer"`
+	RingBuffer RingBufferConfig  `yaml:"ring_buffer"`
 }
 
 // EBPFMonitorConfig defines individual Cilium/eBPF monitor settings
@@ -78,22 +79,22 @@ type RingBufferConfig struct {
 
 // KubernetesConfig defines Kubernetes integration settings
 type KubernetesConfig struct {
-	InCluster           bool          `yaml:"in_cluster"`
-	MetadataCacheTTL    time.Duration `yaml:"metadata_cache_ttl"`
-	WatchInterval       time.Duration `yaml:"watch_interval"`
+	InCluster        bool          `yaml:"in_cluster"`
+	MetadataCacheTTL time.Duration `yaml:"metadata_cache_ttl"`
+	WatchInterval    time.Duration `yaml:"watch_interval"`
 }
 
 // RulesConfig defines rule engine settings
 // ANCHOR: Rule loading configuration - Phase 3.1 Week 3
 // Supports loading rules from file, ConfigMap, or hardcoded defaults
 type RulesConfig struct {
-	FilePath string `yaml:"file_path"` // Path to YAML rules file (e.g., /etc/elf-owl/rules.yaml)
+	FilePath  string `yaml:"file_path"` // Path to YAML rules file (e.g., /etc/elf-owl/rules.yaml)
 	ConfigMap struct {
 		Name      string `yaml:"name"`
 		Namespace string `yaml:"namespace"`
 	} `yaml:"config_map"`
-	EvalTimeout    time.Duration `yaml:"eval_timeout"`
-	LogViolations  bool          `yaml:"log_violations"`
+	EvalTimeout   time.Duration `yaml:"eval_timeout"`
+	LogViolations bool          `yaml:"log_violations"`
 }
 
 // EnrichmentConfig defines event enrichment settings
@@ -123,11 +124,11 @@ type EncryptionConfig struct {
 
 // OWLConfig defines Owl SaaS API settings
 type OWLConfig struct {
-	Endpoint string              `yaml:"endpoint"`
-	Auth     AuthConfig          `yaml:"auth"`
-	Push     PushConfig          `yaml:"push"`
-	Retry    config.RetryConfig  `yaml:"retry"`
-	TLS      TLSConfig           `yaml:"tls"`
+	Endpoint string             `yaml:"endpoint"`
+	Auth     AuthConfig         `yaml:"auth"`
+	Push     PushConfig         `yaml:"push"`
+	Retry    config.RetryConfig `yaml:"retry"`
+	TLS      TLSConfig          `yaml:"tls"`
 }
 
 // AuthConfig defines authentication settings
@@ -228,6 +229,14 @@ func (c *Config) applyEnvironmentOverrides() {
 
 	if logLevel := os.Getenv("OWL_LOG_LEVEL"); logLevel != "" {
 		c.Agent.Logging.Level = logLevel
+	}
+
+	// ANCHOR: Kubernetes mode override via env - Feature: VM/local testing - Mar 23, 2026
+	// Allows start scripts to force out-of-cluster client mode when a kubeconfig is provided.
+	if inCluster := os.Getenv("OWL_K8S_IN_CLUSTER"); inCluster != "" {
+		if parsed, err := strconv.ParseBool(inCluster); err == nil {
+			c.Agent.Kubernetes.InCluster = parsed
+		}
 	}
 }
 

@@ -132,7 +132,10 @@ func (dm *DNSMonitor) eventLoop(ctx context.Context) {
 			case dm.eventChan <- enriched:
 				dm.logger.Debug("dns event sent",
 					zap.Uint32("pid", evt.PID),
-					zap.String("domain", dnsCtx.QueryName))
+					zap.String("domain", dnsCtx.QueryName),
+					zap.String("query_type", dnsCtx.QueryType),
+					zap.Int("response_code", dnsCtx.ResponseCode),
+					zap.Bool("allowed", dnsCtx.QueryAllowed))
 			case <-ctx.Done():
 				return
 			case <-dm.stopChan:
@@ -148,19 +151,19 @@ func (dm *DNSMonitor) eventLoop(ctx context.Context) {
 // dnsQueryTypeName maps DNS query type number to name (RFC 1035)
 func dnsQueryTypeName(qtype uint16) string {
 	queryNames := map[uint16]string{
-		1:    "A",
-		2:    "NS",
-		5:    "CNAME",
-		6:    "SOA",
-		12:   "PTR",
-		15:   "MX",
-		16:   "TXT",
-		28:   "AAAA",
-		33:   "SRV",
-		42:   "NAPTR",
-		43:   "DS",
-		48:   "DNSKEY",
-		255:  "ANY",
+		1:   "A",
+		2:   "NS",
+		5:   "CNAME",
+		6:   "SOA",
+		12:  "PTR",
+		15:  "MX",
+		16:  "TXT",
+		28:  "AAAA",
+		33:  "SRV",
+		42:  "NAPTR",
+		43:  "DS",
+		48:  "DNSKEY",
+		255: "ANY",
 	}
 
 	if name, ok := queryNames[qtype]; ok {
