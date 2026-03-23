@@ -35,13 +35,13 @@ const (
 // Keeps Go layouts aligned with updated eBPF event structures.
 
 type ProcessEvent struct {
+	CgroupID     uint64
+	Capabilities uint64
 	PID          uint32
 	UID          uint32
 	GID          uint32
-	Capabilities uint64
 	Filename     [256]byte
 	Argv         [256]byte
-	CgroupID     uint64
 }
 
 // ============================================================================

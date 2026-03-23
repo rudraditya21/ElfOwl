@@ -6,37 +6,89 @@
 #include <uapi/linux/sched.h>
 #include <linux/bpf.h>
 
+#define MAX_ARGC 3
+#define MAX_ARG_LEN 64
+
 // Event structure matching enrichment.ProcessExecution
 struct process_event {
+    unsigned long cgroup_id;
+    unsigned long capabilities;
     unsigned int pid;
     unsigned int uid;
     unsigned int gid;
-    unsigned long capabilities;
     char filename[256];
     char argv[256];
-    unsigned long cgroup_id;
 };
 
 // Perf buffer for sending events to userspace
 // Will be instantiated in loader.go
 BPF_PERF_OUTPUT(process_events);
 
-// Tracepoint: trace_sched_process_exec (process execution)
-// Fires when a process is executed via execve/execveat
-TRACEPOINT_PROBE(sched, sched_process_exec) {
+// ANCHOR: Process exec parsing - Feature: argv + exe path - Mar 24, 2026
+// Parses execve/execveat arguments for best-effort command line capture.
+static __always_inline void fill_exec_event(struct process_event *evt, const char *filename, const char *const *argv) {
+    char arg_buf[MAX_ARG_LEN] = {};
+    int offset = 0;
+
+    bpf_probe_read_user_str(&evt->filename, sizeof(evt->filename), filename);
+
+#pragma unroll
+    for (int i = 0; i < MAX_ARGC; i++) {
+        const char *argp = 0;
+        if (bpf_probe_read_user(&argp, sizeof(argp), &argv[i]) < 0) {
+            break;
+        }
+        if (argp == 0) {
+            break;
+        }
+
+        int arg_len = bpf_probe_read_user_str(arg_buf, sizeof(arg_buf), argp);
+        if (arg_len <= 1) {
+            continue;
+        }
+
+        if (offset > 0 && offset < (int)sizeof(evt->argv) - 1) {
+            evt->argv[offset++] = ' ';
+        }
+
+#pragma unroll
+        for (int j = 0; j < MAX_ARG_LEN; j++) {
+            if (j >= arg_len - 1) {
+                break;
+            }
+            if (offset >= (int)sizeof(evt->argv) - 1) {
+                break;
+            }
+            evt->argv[offset++] = arg_buf[j];
+        }
+    }
+}
+
+TRACEPOINT_PROBE(syscalls, sys_enter_execve) {
     struct process_event evt = {};
 
     evt.pid = bpf_get_current_pid_tgid() >> 32;
     evt.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
     evt.gid = bpf_get_current_uid_gid() >> 32;
     evt.cgroup_id = bpf_get_current_cgroup_id();
+    evt.capabilities = 0; // TODO: populate via CO-RE task_struct cred access.
 
-    // ANCHOR: Process tracepoint extraction - Feature: comm/filename/cgroup - Mar 23, 2026
-    // Captures command name, best-effort filename, and cgroup for CIS 4.5 signals.
-    // argv parsing and capability extraction require additional kernel helpers (Phase 3).
-    bpf_get_current_comm(&evt.filename, sizeof(evt.filename));
-    bpf_probe_read_kernel_str(&evt.argv, sizeof(evt.argv), args->filename);
-    evt.capabilities = 0;
+    fill_exec_event(&evt, (const char *)args->filename, (const char *const *)args->argv);
+
+    process_events.perf_submit(args, &evt, sizeof(evt));
+    return 0;
+}
+
+TRACEPOINT_PROBE(syscalls, sys_enter_execveat) {
+    struct process_event evt = {};
+
+    evt.pid = bpf_get_current_pid_tgid() >> 32;
+    evt.uid = bpf_get_current_uid_gid() & 0xFFFFFFFF;
+    evt.gid = bpf_get_current_uid_gid() >> 32;
+    evt.cgroup_id = bpf_get_current_cgroup_id();
+    evt.capabilities = 0; // TODO: populate via CO-RE task_struct cred access.
+
+    fill_exec_event(&evt, (const char *)args->filename, (const char *const *)args->argv);
 
     process_events.perf_submit(args, &evt, sizeof(evt));
     return 0;
