@@ -115,12 +115,33 @@ func (nm *NetworkMonitor) eventLoop(ctx context.Context) {
 				protocol = "udp"
 			}
 
+			direction := "unknown"
+			switch evt.Direction {
+			case 1:
+				direction = "outbound"
+			case 2:
+				direction = "inbound"
+			}
+
+			srcIP := ""
+			dstIP := ""
+			if evt.Family == AF_INET6 {
+				srcIP = net.IP(evt.SAddrV6[:]).String()
+				dstIP = net.IP(evt.DAddrV6[:]).String()
+			} else {
+				srcIP = net.IPv4(byte(evt.SAddr), byte(evt.SAddr>>8), byte(evt.SAddr>>16), byte(evt.SAddr>>24)).String()
+				dstIP = net.IPv4(byte(evt.DAddr), byte(evt.DAddr>>8), byte(evt.DAddr>>16), byte(evt.DAddr>>24)).String()
+			}
+
 			netCtx := &enrichment.NetworkContext{
-				SourceIP:        net.IPv4(byte(evt.SAddr), byte(evt.SAddr>>8), byte(evt.SAddr>>16), byte(evt.SAddr>>24)).String(),
-				DestinationIP:   net.IPv4(byte(evt.DAddr), byte(evt.DAddr>>8), byte(evt.DAddr>>16), byte(evt.DAddr>>24)).String(),
-				SourcePort:      evt.SPort,
-				DestinationPort: evt.DPort,
-				Protocol:        protocol,
+				SourceIP:           srcIP,
+				DestinationIP:      dstIP,
+				SourcePort:         evt.SPort,
+				DestinationPort:    evt.DPort,
+				Protocol:           protocol,
+				Direction:          direction,
+				ConnectionState:    tcpStateName(evt.State),
+				NetworkNamespaceID: evt.NetNS,
 			}
 
 			enriched := &enrichment.EnrichedEvent{
@@ -151,6 +172,37 @@ func (nm *NetworkMonitor) eventLoop(ctx context.Context) {
 // EventChan returns the channel for receiving events
 func (nm *NetworkMonitor) EventChan() <-chan *enrichment.EnrichedEvent {
 	return nm.eventChan
+}
+
+// ANCHOR: TCP state mapping - Feature: connection state enrichment - Mar 24, 2026
+// Maps TCP state numeric values to human-readable strings for rule evaluation.
+func tcpStateName(state uint8) string {
+	switch state {
+	case 1:
+		return "ESTABLISHED"
+	case 2:
+		return "SYN_SENT"
+	case 3:
+		return "SYN_RECV"
+	case 4:
+		return "FIN_WAIT1"
+	case 5:
+		return "FIN_WAIT2"
+	case 6:
+		return "TIME_WAIT"
+	case 7:
+		return "CLOSE"
+	case 8:
+		return "CLOSE_WAIT"
+	case 9:
+		return "LAST_ACK"
+	case 10:
+		return "LISTEN"
+	case 11:
+		return "CLOSING"
+	default:
+		return "UNKNOWN"
+	}
 }
 
 // Stop stops the monitor and waits for goroutine to finish
