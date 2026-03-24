@@ -113,16 +113,17 @@ func (cm *CapabilityMonitor) eventLoop(ctx context.Context) {
 			allowed := evt.CheckType != 2
 
 			capCtx := &enrichment.CapabilityContext{
-				Name:    capName,
-				Allowed: allowed,
-				PID:     evt.PID,
+				Name:      capName,
+				Allowed:   allowed,
+				PID:       evt.PID,
+				SyscallID: evt.SyscallID,
 			}
 
 			enriched := &enrichment.EnrichedEvent{
-				RawEvent:  evt,
-				EventType: "capability_usage",
+				RawEvent:   evt,
+				EventType:  "capability_usage",
 				Capability: capCtx,
-				Timestamp: time.Now(),
+				Timestamp:  time.Now(),
 			}
 
 			// Send to enrichment pipeline (non-blocking)

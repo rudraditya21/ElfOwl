@@ -114,19 +114,27 @@ type ProcessContext struct {
 }
 
 // FileContext captures file metadata from cilium/ebpf events
+// ANCHOR: File context extensions - Feature: mode + sensitive path - Mar 24, 2026
+// Adds mode and sensitivity flags for expanded file operation coverage.
 type FileContext struct {
 	Path      string `json:"path"`
 	Operation string `json:"operation"`
 	PID       uint32 `json:"pid"`
 	UID       uint32 `json:"uid"`
+	Mode      uint32 `json:"mode"`
+	FD        uint32 `json:"fd"`
+	Sensitive bool   `json:"sensitive"`
 }
 
 // CapabilityContext captures capability usage metadata
+// ANCHOR: Capability context extension - Feature: syscall attribution - Mar 24, 2026
+// Surfaces syscall IDs associated with capability checks.
 type CapabilityContext struct {
-	Name    string `json:"name"`
-	Allowed bool   `json:"allowed"`
-	PID     uint32 `json:"pid"`
-	UID     uint32 `json:"uid"`
+	Name      string `json:"name"`
+	Allowed   bool   `json:"allowed"`
+	PID       uint32 `json:"pid"`
+	UID       uint32 `json:"uid"`
+	SyscallID uint32 `json:"syscall_id"`
 }
 
 // Note: PodMetadata and NodeMetadata are defined in kubernetes package

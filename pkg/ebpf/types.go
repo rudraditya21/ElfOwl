@@ -31,15 +31,17 @@ const (
 // ============================================================================
 // Process Event Structure (matches eBPF struct process_event)
 // ============================================================================
+// ANCHOR: Event struct expansion - Feature: IPv6/syscalls/file mode - Mar 24, 2026
+// Keeps Go layouts aligned with updated eBPF event structures.
 
 type ProcessEvent struct {
-	PID           uint32
-	UID           uint32
-	GID           uint32
-	Capabilities  uint64
-	Filename      [256]byte
-	Argv          [256]byte
-	CgroupID      uint64
+	CgroupID     uint64
+	Capabilities uint64
+	PID          uint32
+	UID          uint32
+	GID          uint32
+	Filename     [256]byte
+	Argv         [256]byte
 }
 
 // ============================================================================
@@ -47,14 +49,19 @@ type ProcessEvent struct {
 // ============================================================================
 
 type NetworkEvent struct {
-	PID       uint32
-	Family    uint16 // AF_INET=2 or AF_INET6=10
-	SPort     uint16 // Network byte order
-	DPort     uint16 // Network byte order
-	SAddr     uint32 // IPv4 or first 4 bytes of IPv6
-	DAddr     uint32 // IPv4 or first 4 bytes of IPv6
-	Protocol  uint8  // IPPROTO_TCP=6 or IPPROTO_UDP=17
 	CgroupID  uint64
+	PID       uint32
+	NetNS     uint32
+	SAddr     uint32 // IPv4 source (host byte order)
+	DAddr     uint32 // IPv4 destination (host byte order)
+	Family    uint16 // AF_INET=2 or AF_INET6=10
+	SPort     uint16 // Source port (host byte order)
+	DPort     uint16 // Destination port (host byte order)
+	Protocol  uint8  // IPPROTO_TCP=6 or IPPROTO_UDP=17
+	Direction uint8  // 1=outbound, 2=inbound
+	State     uint8  // TCP state transition (newstate)
+	SAddrV6   [16]byte
+	DAddrV6   [16]byte
 }
 
 // ============================================================================
@@ -62,10 +69,13 @@ type NetworkEvent struct {
 // ============================================================================
 
 type FileEvent struct {
+	CgroupID  uint64
 	PID       uint32
 	Flags     uint32 // Open flags (O_WRONLY, O_RDWR, etc.)
-	Operation uint8  // write=1, read=2, chmod=3, unlink=4
-	CgroupID  uint64
+	Mode      uint32
+	FD        uint32
+	Operation uint8 // write=1, read=2, chmod=3, unlink=4
+	Sensitive uint8
 	Filename  [256]byte
 	FlagsStr  [32]byte
 }
@@ -75,10 +85,11 @@ type FileEvent struct {
 // ============================================================================
 
 type CapabilityEvent struct {
-	PID        uint32
-	Capability uint32 // CAP_SYS_ADMIN=21, CAP_SYS_MODULE=16, etc.
-	CheckType  uint8  // check=1, use=2
-	CgroupID   uint64
+	CgroupID    uint64
+	PID         uint32
+	Capability  uint32 // CAP_SYS_ADMIN=21, CAP_SYS_MODULE=16, etc.
+	SyscallID   uint32
+	CheckType   uint8 // check=1, use=2
 	SyscallName [32]byte
 }
 
@@ -87,13 +98,13 @@ type CapabilityEvent struct {
 // ============================================================================
 
 type DNSEvent struct {
-	PID           uint32
-	QueryType     uint16 // A=1, AAAA=28, MX=15, TXT=16, etc.
-	ResponseCode  uint8  // 0=NOERROR, 1=FORMERR, 2=SERVFAIL, etc.
-	QueryAllowed  uint8  // 1=allowed, 0=suspicious/blocked
-	CgroupID      uint64
-	QueryName     [256]byte // Domain name
-	Server        [16]byte  // DNS server IP
+	PID          uint32
+	QueryType    uint16 // A=1, AAAA=28, MX=15, TXT=16, etc.
+	ResponseCode uint8  // 0=NOERROR, 1=FORMERR, 2=SERVFAIL, etc.
+	QueryAllowed uint8  // 1=allowed, 0=suspicious/blocked
+	CgroupID     uint64
+	QueryName    [256]byte // Domain name
+	Server       [16]byte  // DNS server IP
 }
 
 // ============================================================================
@@ -101,12 +112,12 @@ type DNSEvent struct {
 // ============================================================================
 
 const (
-	CapSysAdmin   = 21
-	CapSysModule  = 16
-	CapSysBoot    = 23
-	CapSysPtrace  = 19
-	CapNetAdmin   = 12
-	CapSysRawio   = 17
+	CapSysAdmin    = 21
+	CapSysModule   = 16
+	CapSysBoot     = 23
+	CapSysPtrace   = 19
+	CapNetAdmin    = 12
+	CapSysRawio    = 17
 	CapSysResource = 24
 )
 
@@ -145,7 +156,7 @@ const (
 	DNSRCodeFormErr  = 1
 	DNSRCodeServFail = 2
 	DNSRCodeNameErr  = 3
-	DNSRCodeNotImpl   = 4
+	DNSRCodeNotImpl  = 4
 	DNSRCodeRefused  = 5
 )
 

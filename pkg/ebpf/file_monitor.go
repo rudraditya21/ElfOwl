@@ -128,6 +128,9 @@ func (fm *FileMonitor) eventLoop(ctx context.Context) {
 				Path:      strings.TrimRight(string(evt.Filename[:]), "\x00"),
 				Operation: opType,
 				PID:       evt.PID,
+				Mode:      evt.Mode,
+				FD:        evt.FD,
+				Sensitive: evt.Sensitive == 1,
 			}
 
 			enriched := &enrichment.EnrichedEvent{
