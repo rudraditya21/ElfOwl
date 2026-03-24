@@ -78,14 +78,19 @@ Build agent binary:
 go build -mod=mod -o elf-owl ./cmd/elf-owl
 ```
 
-## 5) Provide a Real Kubernetes API (k3s on host)
+## 5) Real Kubernetes API Server for Testing
 
-`elf-owl` needs Kubernetes client access at startup.
-If this host does not already have a cluster, install k3s:
+`elf-owl` requires Kubernetes API access at startup.
+
+If you already have a real cluster, just point `KUBECONFIG` to it and skip to Step 6.
+If you want a local test-only real API server, use single-node k3s:
+
+### 5.1 Install k3s (test-only real API server)
 
 ```bash
 curl -sfL https://get.k3s.io | sh -
 sudo systemctl enable --now k3s
+sudo systemctl is-active k3s
 sudo k3s kubectl get nodes -o wide
 ```
 
@@ -96,6 +101,24 @@ mkdir -p ~/.kube
 sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
 sudo chown "$USER:$USER" ~/.kube/config
 chmod 600 ~/.kube/config
+kubectl --kubeconfig ~/.kube/config get nodes -o wide
+```
+
+### 5.2 Seed minimal Kubernetes objects (for testing only)
+
+This is optional but useful to confirm API access and watcher behavior:
+
+```bash
+kubectl --kubeconfig ~/.kube/config create ns owl-test || true
+kubectl --kubeconfig ~/.kube/config -n owl-test run owl-test-nginx --image=nginx:stable --restart=Always || true
+kubectl --kubeconfig ~/.kube/config -n owl-test get pods -o wide
+```
+
+### 5.3 Optional cleanup after testing
+
+```bash
+kubectl --kubeconfig ~/.kube/config delete ns owl-test --ignore-not-found=true
+sudo /usr/local/bin/k3s-uninstall.sh || true
 ```
 
 ## 6) Start Agent (debug)
