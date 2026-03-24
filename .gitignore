@@ -45,6 +45,7 @@ main
 elf-owl
 *.out
 cmd/*/cmd
+pkg/ebpf/programs/vmlinux.h
 
 # Large media files
 *.mp4
@@ -53,4 +54,3 @@ cmd/*/cmd
 *.flv
 *.mov
 *.wmv
-
