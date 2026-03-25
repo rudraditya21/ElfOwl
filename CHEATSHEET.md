@@ -17,6 +17,11 @@ Agent PID file in VM:   /var/run/elf-owl/agent.pid
 ### 2.1 Host: start agent in debug mode
 
 ```bash
+scripts/setup-vm.sh --name elf-owl-dev --cpus 2 --memory 6G --disk 20G
+scripts/setup-k8s-vm.sh --name elf-owl-dev --kubeconfig /home/ubuntu/.kube/config
+scripts/build-ebpf-vm.sh --name elf-owl-dev --sync --pull
+
+
 scripts/start-agent.sh --name elf-owl-dev --log-level debug --kubeconfig /home/ubuntu/.kube/config
 ```
 
@@ -211,4 +216,22 @@ scripts/check-state.sh --name elf-owl-dev
 scripts/event-summary.sh --name elf-owl-dev
 scripts/check-logs.sh --name elf-owl-dev --type events --lines 300
 scripts/check-event-values.sh --name elf-owl-dev --lines 10
+```
+
+
+## Delete instances
+
+```sh
+# Stop a specific VM
+multipass stop elf-owl-dev
+
+# Delete a specific VM
+multipass delete elf-owl-dev
+
+# Purge deleted VMs permanently
+multipass purge
+
+# Delete all VMs at once
+multipass delete --all
+multipass purge
 ```
