@@ -26,6 +26,12 @@
 #endif
 
 // Linux x86_64 syscall numbers used by raw_syscalls tracepoints.
+// ANCHOR: Syscall ID arch guard - Safety: non-x86 builds - Mar 25, 2026
+// Syscall numbers below are x86_64-specific; fail fast on other arches.
+#ifndef __TARGET_ARCH_x86
+#error "elf-owl eBPF syscall IDs are defined for x86_64 only"
+#endif
+
 #ifndef __NR_write
 #define __NR_write 1
 #endif
