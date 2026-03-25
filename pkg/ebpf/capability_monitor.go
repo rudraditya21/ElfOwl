@@ -112,10 +112,13 @@ func (cm *CapabilityMonitor) eventLoop(ctx context.Context) {
 			capName := capabilityName(evt.Capability)
 			allowed := evt.CheckType != 2
 
+			// ANCHOR: Capability syscall attribution mapping - Feature: syscall_id in enrichment - Mar 25, 2026
+			// Propagates syscall_id from eBPF events into the CapabilityContext.
 			capCtx := &enrichment.CapabilityContext{
-				Name:    capName,
-				Allowed: allowed,
-				PID:     evt.PID,
+				Name:      capName,
+				Allowed:   allowed,
+				PID:       evt.PID,
+				SyscallID: evt.SyscallID,
 			}
 
 			enriched := &enrichment.EnrichedEvent{
@@ -132,6 +135,7 @@ func (cm *CapabilityMonitor) eventLoop(ctx context.Context) {
 					zap.Uint32("pid", evt.PID),
 					zap.String("capability", capName),
 					zap.Uint8("check_type", evt.CheckType),
+					zap.Uint32("syscall_id", evt.SyscallID),
 					zap.String("syscall", string(bytes.TrimRight(evt.SyscallName[:], "\x00"))))
 			case <-ctx.Done():
 				return
