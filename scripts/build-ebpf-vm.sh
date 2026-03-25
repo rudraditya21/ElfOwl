@@ -48,6 +48,15 @@ multipass exec "$VM_NAME" -- bash -lc '
 '
 
 echo "[ebpf-build] Building C eBPF programs in VM..."
+# ANCHOR: BTF preflight - Safety: CO-RE guard - Mar 25, 2026
+multipass exec "$VM_NAME" -- bash -lc "
+  set -euo pipefail
+  if [[ ! -f /sys/kernel/btf/vmlinux ]]; then
+    echo "[ebpf-build] Missing /sys/kernel/btf/vmlinux (BTF not enabled)" >&2
+    exit 1
+  fi
+"
+
 multipass exec "$VM_NAME" -- bash -lc "
   set -euo pipefail
   cd '$VM_PROJECT_DIR/pkg/ebpf/programs'
