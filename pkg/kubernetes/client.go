@@ -293,6 +293,7 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 
 	// First, try querying just the agent's namespace
 	pods, err := c.clientset.CoreV1().Pods(agentNamespace).List(ctx, metav1.ListOptions{})
+	agentListErr := err
 	if err == nil {
 		// Search agent namespace first
 		for _, pod := range pods.Items {
@@ -314,9 +315,10 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 	// Query all pods in all namespaces (expensive operation, done as fallback)
 	allPods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		// If we can't list pods, return nil gracefully
-		// Enricher will use defaults rather than failing
-		return nil, nil
+		if agentListErr != nil {
+			return nil, fmt.Errorf("failed to list pods in agent namespace %q: %v; cluster-wide list failed: %w", agentNamespace, agentListErr, err)
+		}
+		return nil, fmt.Errorf("failed to list pods cluster-wide: %w", err)
 	}
 
 	// Search for matching container ID across all pods

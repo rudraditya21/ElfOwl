@@ -335,9 +335,9 @@ func isHexString(value string) bool {
 // getPodMetadata retrieves pod metadata from K8s API, using cache when available
 // ANCHOR: Pod metadata lookup via K8s API - Phase 2.2, Dec 26, 2025
 // First checks local enricher cache, then queries K8s API for pod metadata via container ID
-func (e *Enricher) getPodMetadata(ctx context.Context, containerID string) *PodMetadata {
+func (e *Enricher) getPodMetadata(ctx context.Context, containerID string) (*PodMetadata, error) {
 	if e.K8sClient == nil || containerID == "" {
-		return nil
+		return nil, nil
 	}
 
 	// Check local enricher cache first
@@ -353,9 +353,9 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string) *PodM
 			metadata, err := e.K8sClient.GetPodMetadata(ctx, parts[0], parts[1])
 			if err != nil {
 				e.Logger.Debug("failed to get pod metadata from cache", zap.Error(err))
-				return nil
+				return nil, err
 			}
-			return metadata
+			return metadata, nil
 		}
 	}
 
@@ -363,7 +363,7 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string) *PodM
 	metadata, err := e.K8sClient.GetPodByContainerID(ctx, containerID)
 	if err != nil {
 		e.Logger.Debug("failed to find pod by container ID", zap.String("containerID", containerID), zap.Error(err))
-		return nil
+		return nil, err
 	}
 
 	if metadata != nil {
@@ -374,7 +374,7 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string) *PodM
 		e.containerToPodMutex.Unlock()
 	}
 
-	return metadata
+	return metadata, nil
 }
 
 // parseImageRegistry extracts registry from full image path (e.g. "docker.io/library/nginx:latest" -> "docker.io")
@@ -461,7 +461,10 @@ func (e *Enricher) EnrichProcessEvent(
 	}
 
 	// Get pod metadata from K8s API (returns nil if not available)
-	podMeta := e.getPodMetadata(ctx, containerID)
+	podMeta, err := e.getPodMetadata(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build Kubernetes context with available metadata
 	k8sCtx := &K8sContext{
@@ -609,7 +612,10 @@ func (e *Enricher) EnrichNetworkEvent(
 	containerCtx := &ContainerContext{
 		ContainerID: containerID,
 	}
-	podMeta := e.getPodMetadata(ctx, containerID)
+	podMeta, err := e.getPodMetadata(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -705,7 +711,10 @@ func (e *Enricher) EnrichDNSEvent(
 	containerCtx := &ContainerContext{
 		ContainerID: containerID,
 	}
-	podMeta := e.getPodMetadata(ctx, containerID)
+	podMeta, err := e.getPodMetadata(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -778,7 +787,10 @@ func (e *Enricher) EnrichFileEvent(
 	containerCtx := &ContainerContext{
 		ContainerID: containerID,
 	}
-	podMeta := e.getPodMetadata(ctx, containerID)
+	podMeta, err := e.getPodMetadata(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
@@ -866,7 +878,10 @@ func (e *Enricher) EnrichCapabilityEvent(
 	containerCtx := &ContainerContext{
 		ContainerID: containerID,
 	}
-	podMeta := e.getPodMetadata(ctx, containerID)
+	podMeta, err := e.getPodMetadata(ctx, containerID)
+	if err != nil {
+		return nil, err
+	}
 
 	// Build Kubernetes context
 	k8sCtx := &K8sContext{
