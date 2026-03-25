@@ -146,7 +146,8 @@ func NewAgent(config *Config) (*Agent, error) {
 	if !config.Agent.Enrichment.KubernetesMetadata {
 		agent.Logger.Warn("kubernetes metadata enrichment disabled", zap.Bool("kubernetes_only", config.Agent.Enrichment.KubernetesOnly))
 		if config.Agent.Enrichment.KubernetesOnly {
-			agent.Logger.Warn("kubernetes_only enabled while kubernetes_metadata is disabled; host events will be discarded")
+			// Note: This condition should be caught by config.Validate(), but log the accuracy here for clarity.
+			agent.Logger.Warn("kubernetes_only enabled while kubernetes_metadata is disabled; all events without K8s context will be discarded")
 		}
 		enricherK8sClient = nil
 	}
