@@ -16,6 +16,21 @@ uname -a
 id
 ```
 
+### CO-RE prerequisites
+
+CO-RE builds require kernel BTF and bpftool. Verify:
+
+```bash
+ls -l /sys/kernel/btf/vmlinux
+which bpftool
+```
+
+If needed, generate `pkg/ebpf/programs/vmlinux.h` with:
+
+```bash
+scripts/generate-vmlinux.sh
+```
+
 ## 2) Install Dependencies (idempotent)
 
 ### Ubuntu/Debian
@@ -24,7 +39,7 @@ id
 sudo apt-get update
 sudo apt-get install -y \
   git curl ca-certificates make gcc clang llvm jq \
-  libbpf-dev linux-libc-dev dnsutils python3
+  libbpf-dev linux-libc-dev bpftool dnsutils python3
 ```
 
 ### Fedora/RHEL/CentOS Stream
@@ -32,7 +47,7 @@ sudo apt-get install -y \
 ```bash
 sudo dnf install -y \
   git curl ca-certificates make gcc clang llvm jq \
-  libbpf-devel kernel-headers bind-utils python3
+  libbpf-devel kernel-headers bpftool bind-utils python3
 ```
 
 ## 3) Install Go 1.23.x (if needed)
