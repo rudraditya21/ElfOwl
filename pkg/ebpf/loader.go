@@ -151,8 +151,9 @@ func programDefinitions(opts LoadOptions) []programDefinition {
 			Name:            ProcessProgramName,
 			Description:     "process execution",
 			MapName:         ProcessEventsMap,
-			TracepointGroup: "raw_syscalls",
-			TracepointName:  "sys_enter",
+			// ANCHOR: Process tracepoint selection - Feature: execve/execveat - Mar 25, 2026
+			TracepointGroup: "syscalls",
+			TracepointName:  "sys_enter_execve",
 			Config:          opts.Process,
 		},
 		{
