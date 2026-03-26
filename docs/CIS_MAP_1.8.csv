@@ -1,0 +1,126 @@
+control_id,title,support,rule_id,fields,notes
+1.1.1,Ensure that the API server pod specification file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.2,Ensure that the API server pod specification file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.3,Ensure that the controller manager pod specification file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.4,Ensure that the controller manager pod specification file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.5,Ensure that the scheduler pod specification file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.6,Ensure that the scheduler pod specification file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.7,Ensure that the etcd pod specification file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.8,Ensure that the etcd pod specification file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.9,Ensure that the Container Network Interface file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.10,Ensure that the Container Network Interface file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.11,Ensure that the etcd data directory permissions are set to 700 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.12,Ensure that the etcd data directory ownership is set to etcd,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.13,Ensure that the admin.conf file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.14,Ensure that the admin.conf file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.15,Ensure that the scheduler.conf file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.16,Ensure that the scheduler.conf file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.17,Ensure that the controller-manager.conf file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.18,Ensure that the controller-manager.conf file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.19,Ensure that the Kubernetes PKI directory and file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.20,Ensure that the Kubernetes PKI certificate file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.1.21,Ensure that the Kubernetes PKI key file permissions are set to 600,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.1,Ensure that the --anonymous-auth argument is set to false,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.2,Ensure that the --token-auth-file parameter is not set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.3,Ensure that the --DenyServiceExternalIPs is not set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.4,Ensure that the --kubelet-client-certificate and --kubelet-client-key arguments are set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.5,Ensure that the --kubelet-certificate-authority argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.6,Ensure that the --authorization-mode argument is not set to AlwaysAllow,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.7,Ensure that the --authorization-mode argument includes Node,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.8,Ensure that the --authorization-mode argument includes RBAC,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.9,Ensure that the admission control plugin EventRateLimit is set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.10,Ensure that the admission control plugin AlwaysAdmit is not set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.11,Ensure that the admission control plugin AlwaysPullImages is set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.12,Ensure that the admission control plugin SecurityContextDeny is set if PodSecurityPolicy is not used,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.13,Ensure that the admission control plugin ServiceAccount is set,Partial,CIS_4.1.1,kubernetes.service_account,"Detects ServiceAccount usage, not the admission plugin flag."
+1.2.14,Ensure that the admission control plugin NamespaceLifecycle is set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.15,Ensure that the admission control plugin NodeRestriction is set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.16,Ensure that the --profiling argument is set to false,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.17,Ensure that the --audit-log-path argument is set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.18,Ensure that the --audit-log-maxage argument is set to 30 or as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.19,Ensure that the --audit-log-maxbackup argument is set to 10 or as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.20,Ensure that the --audit-log-maxsize argument is set to 100 or as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.21,Ensure that the --request-timeout argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.22,Ensure that the --service-account-lookup argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.23,Ensure that the --service-account-key-file argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.24,Ensure that the --etcd-certfile and --etcd-keyfile arguments are set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.25,Ensure that the --tls-cert-file and --tls-private-key-file arguments are set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.26,Ensure that the --client-ca-file argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.27,Ensure that the --etcd-cafile argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.28,Ensure that the --encryption-provider-config argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.29,Ensure that encryption providers are appropriately configured,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.2.30,Ensure that the API Server only makes use of Strong Cryptographic Ciphers,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.1,Ensure that the --terminated-pod-gc-threshold argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.2,Ensure that the --profiling argument is set to false,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.3,Ensure that the --use-service-account-credentials argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.4,Ensure that the --service-account-private-key-file argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.5,Ensure that the --root-ca-file argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.6,Ensure that the RotateKubeletServerCertificate argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.3.7,Ensure that the --bind-address argument is set to 127.0.0.1,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.4.1,Ensure that the --profiling argument is set to false,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+1.4.2,Ensure that the --bind-address argument is set to 127.0.0.1,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.1,Ensure that the --cert-file and --key-file arguments are set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.2,Ensure that the --client-cert-auth argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.3,Ensure that the --auto-tls argument is not set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.4,Ensure that the --peer-cert-file and --peer-key-file arguments are set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.5,Ensure that the --peer-client-cert-auth argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.6,Ensure that the --peer-auto-tls argument is not set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+2.7,Ensure that a unique Certificate Authority is used for etcd,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.1,Ensure that the kubelet service file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.2,Ensure that the kubelet service file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.3,If proxy kubeconfig file exists ensure permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.4,If proxy kubeconfig file exists ensure ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.5,Ensure that the --kubeconfig kubelet.conf file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.6,Ensure that the --kubeconfig kubelet.conf file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.7,Ensure that the certificate authorities file permissions are set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.8,Ensure that the client certificate authorities file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.9,Ensure that the kubelet --config configuration file has permissions set to 600 or more restrictive,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.1.10,Ensure that the kubelet --config configuration file ownership is set to root,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.1,Ensure that the --anonymous-auth argument is set to false,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.2,Ensure that the --authorization-mode argument is not set to AlwaysAllow,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.3,Ensure that the --client-ca-file argument is set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.4,Verify that the --read-only-port argument is set to 0,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.5,Ensure that the --streaming-connection-idle-timeout argument is not set to 0,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.6,Ensure that the --make-iptables-util-chains argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.7,Ensure that the --hostname-override argument is not set,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.8,Ensure that the eventRecordQPS argument is set to a level which ensures appropriate event capture,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.9,Ensure that the --tls-cert-file and --tls-private-key-file arguments are set as appropriate,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.10,Ensure that the --rotate-certificates argument is not set to false,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.11,Verify that the RotateKubeletServerCertificate argument is set to true,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.12,Ensure that the Kubelet only makes use of Strong Cryptographic Ciphers,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+4.2.13,Ensure that a limit is set on pod PIDs,No,,,Requires control-plane or node host configuration/files; not available in current read-only in-cluster scope.
+5.1.1,Ensure that the cluster-admin role is only used where required,Partial,CIS_5.1.1,kubernetes.rbac_enforced,"Checks RBAC enforcement heuristic, not explicit cluster-admin bindings."
+5.1.2,Minimize access to secrets,Partial,CIS_5.1.2,kubernetes.rbac_level,Privilege level heuristic; does not target Secret verbs specifically.
+5.1.3,Minimize wildcard use in Roles and ClusterRoles,Partial,CIS_5.4.2,kubernetes.role_permission_count,Permission count heuristic; does not detect explicit wildcards.
+5.1.4,Minimize access to create pods,Partial,CIS_5.1.2,kubernetes.rbac_level,Privilege level heuristic; not specific to pod create verb.
+5.1.5,Ensure that default service accounts are not actively used.,Yes,CIS_5.3.1,kubernetes.service_account,
+5.1.6,Ensure that Service Account Tokens are only mounted where necessary,Yes,CIS_5.2.1,kubernetes.automount_service_account_token,
+5.1.7,Avoid use of system group,No,,,Requires verb-level RBAC audits not yet implemented.
+5.1.8,"Limit use of the Bind, Impersonate and Escalate permissions in the Kubernetes cluster",No,,,Requires verb-level RBAC audits not yet implemented.
+5.1.9,Minimize access to create persistent volumes,No,,,Requires verb-level RBAC audits not yet implemented.
+5.1.10,Minimize access to the proxy sub-resource of nodes,No,,,Requires verb-level RBAC audits not yet implemented.
+5.1.11,Minimize access to the approval sub-resource of certificatesigningrequests objects,No,,,Requires verb-level RBAC audits not yet implemented.
+5.1.12,Minimize access to webhook configuration objects,No,,,Requires verb-level RBAC audits not yet implemented.
+5.1.13,Minimize access to the service account token creation,No,,,Requires verb-level RBAC audits not yet implemented.
+5.2.1,Ensure that the cluster has at least one active policy control mechanism in place,No,,,Requires admission policy/PSA/OPA configuration evaluation.
+5.2.2,Minimize the admission of privileged containers,Yes,CIS_4.5.1,container.security_context.privileged,
+5.2.3,Minimize the admission of containers wishing to share the host process ID namespace,Yes,CIS_4.2.5,container.host_pid,
+5.2.4,Minimize the admission of containers wishing to share the host IPC namespace,Yes,CIS_4.2.4,container.host_ipc,
+5.2.5,Minimize the admission of containers wishing to share the host network namespace,Yes,CIS_4.2.3,container.host_network,
+5.2.6,Minimize the admission of containers with allowPrivilegeEscalation,Yes,CIS_4.2.2,container.allow_privilege_escalation,
+5.2.7,Minimize the admission of root containers,Yes,CIS_4.2.1,container.run_as_root,Runtime root execution also covered by CIS_4.5.2 (process.uid).
+5.2.8,Minimize the admission of containers with the NET_RAW capability,Partial,CIS_4.2.6|CIS_4.5.3,capability.name,Detects runtime capability usage; does not verify admission policy.
+5.2.9,Minimize the admission of containers with added capabilities,Partial,CIS_4.2.6|CIS_4.5.3,capability.name,Detects runtime capability usage; does not verify admission policy.
+5.2.10,Minimize the admission of containers with capabilities assigned,Partial,CIS_4.2.6|CIS_4.5.3,capability.name,Detects runtime capability usage; does not verify admission policy.
+5.2.11,Minimize the admission of Windows HostProcess containers,No,,,Windows HostProcess signals not implemented.
+5.2.12,Minimize the admission of HostPath volumes,Yes,CIS_4.8.2,container.volume_type,
+5.2.13,Minimize the admission of containers which use HostPorts,No,,,No hostPort field or rule in current enrichment.
+5.3.1,Ensure that the CNI in use supports NetworkPolicies,No,,,Requires CNI capability detection.
+5.3.2,Ensure that all Namespaces have NetworkPolicies defined,Partial,CIS_4.6.1,kubernetes.has_default_deny_policy,"Checks default-deny namespace isolation, not per-namespace policy coverage."
+5.4.1,Prefer using Secrets as files over Secrets as environment variables,No,,,Requires container env/volume usage analysis.
+5.4.2,Consider external secret storage,No,,,Requires external secrets provider detection.
+5.5.1,Configure Image Provenance using ImagePolicyWebhook admission controller,Partial,CIS_4.3.4|CIS_4.3.5|CIS_4.3.6,container.image_scan_status|container.image_registry_auth|container.image_signed,Uses pod metadata signals; does not verify admission controller config.
+5.7.1,Create administrative boundaries between resources using namespaces,No,,,No namespace boundary policy checks implemented.
+5.7.2,Ensure that the seccomp profile is set to docker/default in your Pod definitions,Partial,CIS_4.2.7|CIS_4.7.1,container.seccomp_profile,Checks seccomp usage; not strict profile enforcement.
+5.7.3,Apply SecurityContext to your Pods and Containers,Partial,CIS_4.2.1|CIS_4.2.2|CIS_4.2.3|CIS_4.2.4|CIS_4.2.5|CIS_4.2.7|CIS_4.2.8,container.run_as_root|container.allow_privilege_escalation|container.host_network|container.host_ipc|container.host_pid|container.seccomp_profile|container.apparmor_profile,Covers specific SecurityContext fields; not a holistic presence check.
+5.7.4,The default namespace should not be used,No,,,No default-namespace policy rule implemented.

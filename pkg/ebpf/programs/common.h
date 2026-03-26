@@ -89,16 +89,18 @@ static __always_inline __u32 current_gid(void) {
 
 static __always_inline __u64 current_cap_effective(void) {
 	struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
-	__u32 cap0 = 0;
-	__u32 cap1 = 0;
+	__u64 caps = 0;
 
 	if (!task) {
 		return 0;
 	}
 
-	cap0 = BPF_CORE_READ(task, real_cred, cap_effective.cap[0]);
-	cap1 = BPF_CORE_READ(task, real_cred, cap_effective.cap[1]);
-	return ((__u64)cap1 << 32) | cap0;
+	/*
+	 * Avoid depending on kernel_cap_t internals (cap[] vs val[]),
+	 * which differ across kernel/BTF layouts.
+	 */
+	BPF_CORE_READ_INTO(&caps, task, real_cred, cap_effective);
+	return caps;
 }
 
 static __always_inline __u32 current_netns_inum(void) {

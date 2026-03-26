@@ -40,22 +40,26 @@ fi
 multipass start "$VM_NAME" >/dev/null 2>&1 || true
 
 echo "[ebpf-build] Ensuring VM build dependencies..."
-# ANCHOR: VM CO-RE deps - Feature: bpftool install - Mar 25, 2026
+# ANCHOR: VM CO-RE deps - Fix: bpftool package availability - Mar 25, 2026
+# bpftool is not always available in standard repos; use linux-tools-generic as fallback.
+# Make bpftool installation optional since it's not strictly required for CO-RE compilation.
 multipass exec "$VM_NAME" -- bash -lc '
   set -euo pipefail
   sudo apt-get update -y >/dev/null
-  sudo apt-get install -y clang llvm make libbpf-dev linux-libc-dev bpftool >/dev/null
+  sudo apt-get install -y clang llvm make libbpf-dev linux-libc-dev >/dev/null
+  # Try to install bpftool from linux-tools, but do not fail if unavailable
+  sudo apt-get install -y linux-tools-generic >/dev/null 2>&1 || true
 '
 
 echo "[ebpf-build] Building C eBPF programs in VM..."
 # ANCHOR: BTF preflight - Safety: CO-RE guard - Mar 25, 2026
-multipass exec "$VM_NAME" -- bash -lc "
+multipass exec "$VM_NAME" -- bash -lc '
   set -euo pipefail
   if [[ ! -f /sys/kernel/btf/vmlinux ]]; then
     echo "[ebpf-build] Missing /sys/kernel/btf/vmlinux (BTF not enabled)" >&2
     exit 1
   fi
-"
+'
 
 multipass exec "$VM_NAME" -- bash -lc "
   set -euo pipefail

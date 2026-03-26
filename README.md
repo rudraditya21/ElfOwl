@@ -2,9 +2,9 @@
 
 **A read-only, push-only compliance agent for CIS Kubernetes v1.8 detection and monitoring**
 
-> **Status:** 🚀 Bootstrap Complete - Week 2-6 Implementation In Progress
+> **Status:** Core pipeline implemented; see `docs/TODO_2026026.md` for remaining gaps.
 > **Current Version:** 0.1.0 (Development)
-> **Date:** December 26, 2025
+> **Date:** March 26, 2026
 
 ---
 
@@ -20,33 +20,23 @@ elf-owl is a minimal compliance observer agent that detects CIS Kubernetes v1.8 
 
 ### Key Features
 
-✅ **eBPF Runtime Security Monitoring**
-- Process execution tracking
-- Network connection monitoring
-- DNS query tracking
-- File access auditing
-- Linux capability usage detection
+✅ **eBPF Runtime Security Monitoring**  
+Process exec events (execve/execveat). Network connection telemetry (TCP/UDP with IPv4/IPv6 tuples). DNS query/response metadata (best-effort payload parsing). File activity (open/write/chmod/unlink). Linux capability checks with syscall attribution.
 
-✅ **CIS Kubernetes Compliance**
-- Detects 48 automated violations
-- Supports 9 manual review controls
-- Maps to remediation guides
+✅ **CIS Kubernetes Compliance**  
+48 automated control mappings + 9 manual references. Rule engine with YAML/ConfigMap loading and hardcoded fallback. Remediation guidance via docs.
 
-✅ **Kubernetes Integration**
-- In-cluster pod metadata enrichment
-- Service account context
-- Container image tracking
-- Owner reference tracking
+✅ **Kubernetes Integration**  
+In-cluster pod metadata enrichment (namespace, labels, service accounts, node). NetworkPolicy evaluation and namespace isolation signals. RBAC context + privilege level scoring.
 
-✅ **Evidence Protection**
-- HMAC-SHA256 signing for integrity
-- AES-256-GCM encryption for confidentiality
-- Batch compression for efficiency
+✅ **Evidence Protection + Push**  
+HMAC-SHA256 signing, AES-256-GCM encryption, gzip batching, retry logic, JWT/TLS outbound push.
 
-✅ **Cloud-Native Deployment**
-- Kubernetes DaemonSet
-- Helm charts + Kustomize overlays
-- RBAC (read-only access)
+✅ **Operations**  
+Health endpoint (`/health`) and Prometheus metrics (`/metrics`), plus structured logging.
+
+✅ **Cloud-Native Deployment**  
+Kubernetes DaemonSet, Helm chart + Kustomize overlays, read-only RBAC manifests.
 
 ---
 
@@ -92,7 +82,8 @@ elf-owl/
 │   └── logger/                  # Structured logging
 ├── config/
 │   ├── elf-owl.yaml             # Default configuration
-│   └── cis-rules.yaml           # CIS control definitions (TBD)
+│   └── rules/
+│       └── cis-controls.yaml    # CIS control definitions (YAML)
 ├── deploy/
 │   ├── helm/                    # Helm chart for K8s deployment
 │   └── kustomize/               # Kustomize overlays
@@ -119,73 +110,56 @@ elf-owl/
 - [x] Enrichment types (enrichment/types.go)
 - [x] Rule engine skeleton (rules/engine.go)
 
-### ⏳ Week 2: Event Processing Pipeline
-- [ ] Implement enrichment pipeline
-  - [ ] Container ID extraction from cgroup
-  - [ ] K8s pod metadata injection
-  - [ ] Container runtime context
-  - [ ] Owner reference resolution
-- [ ] Implement rule engine
-  - [ ] Condition evaluation logic
-  - [ ] Add 48 automated CIS controls
-  - [ ] Rule matching against events
-- [ ] Create CIS control mappings (cis_mappings.go)
-- [ ] Add rule loader (loader.go)
+### ✅ Week 2: Event Processing Pipeline
+- [x] Enrichment pipeline wired into agent
+- [x] Container ID extraction from cgroup
+- [x] K8s pod metadata injection
+- [ ] Container runtime context
+- [ ] Owner reference resolution
+- [x] Rule engine (condition evaluation + matching)
+- [x] 48 automated CIS controls mapped
+- [x] CIS control mappings (cis_mappings.go)
+- [x] Rule loader (file + ConfigMap)
 
-### ⏳ Week 3: Evidence & API
-- [ ] Implement HMAC signing (complete)
-- [ ] Implement AES encryption (complete)
-- [ ] Implement API client
-  - [ ] Event serialization
-  - [ ] Batch formatting
-  - [ ] gzip compression
-  - [ ] TLS/JWT authentication
-  - [ ] Retry logic with backoff
-- [ ] Implement buffer flush logic
+### ✅ Week 3: Evidence & API
+- [x] HMAC signing
+- [x] AES encryption
+- [x] API client with JWT/TLS
+- [x] Event serialization + batch formatting
+- [x] gzip compression
+- [x] Retry logic with backoff
+- [x] Buffer flush logic
 
-### ⏳ Week 4: Kubernetes Integration
-- [ ] Implement K8s API client
-  - [ ] Pod metadata queries
-  - [ ] Node metadata queries
-  - [ ] Owner reference resolution
-- [ ] Implement metadata cache
-  - [ ] TTL-based expiry
-  - [ ] Container ID → Pod mapping
-- [ ] Create Helm chart
-  - [ ] DaemonSet definition
-  - [ ] ConfigMap for rules
-  - [ ] Secret for credentials
-- [ ] Create RBAC definitions
-  - [ ] ServiceAccount
-  - [ ] ClusterRole (read-only)
-  - [ ] ClusterRoleBinding
+### ✅ Week 4: Kubernetes Integration
+- [x] Pod metadata queries
+- [x] Node metadata queries (available; not yet wired into enrichment)
+- [ ] Owner reference resolution
+- [x] Metadata cache with TTL
+- [x] Container ID → Pod mapping
+- [x] Helm chart (DaemonSet, ConfigMap, Secret)
+- [x] RBAC definitions (ServiceAccount, ClusterRole, ClusterRoleBinding)
 
 ### ⏳ Week 5: Testing & Polish
-- [ ] Unit tests (~620 LOC)
-  - [ ] Rule matching tests
-  - [ ] Enrichment tests
-  - [ ] Evidence signing/encryption tests
-  - [ ] API client tests
-- [ ] Integration tests (~350 LOC)
-  - [ ] Full event pipeline
-  - [ ] K8s metadata injection
-  - [ ] Mock cilium/ebpf monitor integration
-- [ ] E2E tests (~150 LOC)
-  - [ ] Deploy to test cluster
-  - [ ] Generate violations
-  - [ ] Verify event capture
-- [ ] Add health check endpoints
-- [ ] Add Prometheus metrics
+- [x] Rule matching tests
+- [x] Enrichment tests
+- [x] eBPF monitor tests
+- [ ] Evidence signing/encryption tests
+- [ ] API client tests
+- [x] Integration tests (rules/enrichment/ebpf pipeline)
+- [ ] E2E tests (deploy to cluster)
+- [x] Health check endpoints
+- [x] Prometheus metrics
 
 ### ⏳ Week 6: Documentation
-- [ ] Architecture documentation
-- [ ] CIS control reference
-- [ ] Deployment guide
-- [ ] Troubleshooting guide
-- [ ] Configuration reference
+- [x] Architecture documentation
+- [ ] CIS control reference (standalone doc)
+- [x] Deployment/installation guides
+- [x] Troubleshooting notes
+- [x] Configuration reference
 - [ ] Contributing guide
 
 ---
+
 
 ## Quick Start
 
@@ -371,7 +345,7 @@ elf-owl detects compliance with:
 - CIS 1.1-1.5: API server configuration (requires node access)
 - CIS 4.2: Kubelet configuration (requires node access)
 
-See [CIS_CONTROLS.md](docs/CIS_CONTROLS.md) for complete reference.
+See `config/rules/cis-controls.yaml` and `docs/remediation.md` for full control mappings and remediation guidance.
 
 ---
 
@@ -436,7 +410,7 @@ kubectl auth can-i get pods --as=system:serviceaccount:elf-owl-system:elf-owl
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+Contributing guide is not yet published.
 
 ---
 
@@ -453,5 +427,5 @@ For issues, questions, or contributions, please open an issue on GitHub.
 ---
 
 **Version:** 0.1.0
-**Last Updated:** December 26, 2025
-**Next Milestone:** Week 2 - Event Processing Pipeline
+**Last Updated:** March 26, 2026
+**Next Milestone:** Close items in `docs/TODO_20260326.md`

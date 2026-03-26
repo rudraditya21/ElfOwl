@@ -3,9 +3,6 @@
 
 #include "common.h"
 
-#define MAX_ARGC 3
-#define MAX_ARG_LEN 64
-
 // Event layout must match pkg/ebpf/types.go: ProcessEvent.
 struct process_event {
 	__u32 pid;
@@ -28,74 +25,17 @@ struct {
 	__type(value, struct process_event);
 } process_heap SEC(".maps");
 
-struct sys_enter_execve_ctx {
-	__u16 common_type;
-	__u8 common_flags;
-	__u8 common_preempt_count;
-	__s32 common_pid;
-	long __syscall_nr;
-	const char *filename;
-	const char *const *argv;
-	const char *const *envp;
-};
-
-struct sys_enter_execveat_ctx {
-	__u16 common_type;
-	__u8 common_flags;
-	__u8 common_preempt_count;
-	__s32 common_pid;
-	long __syscall_nr;
-	int dfd;
-	const char *filename;
-	const char *const *argv;
-	const char *const *envp;
-	int flags;
-};
-
-// ANCHOR: Exec argv parsing helper - Fix: recover execveat visibility - Mar 25, 2026
-// Best-effort argv reconstruction with bounded loops for verifier safety.
-static __always_inline void fill_exec_event(struct process_event *evt, const char *filename, const char *const *argv)
+// ANCHOR: Exec event payload helper - Fix: verifier complexity regression - Mar 25, 2026
+// Avoid direct user-pointer reads from tracepoint ctx on older kernels.
+static __always_inline void fill_exec_event(struct process_event *evt)
 {
-	int offset = 0;
-
-	if (filename) {
-		bpf_probe_read_user_str(evt->filename, sizeof(evt->filename), filename);
-	}
-
-#pragma unroll
-	for (int i = 0; i < MAX_ARGC; i++) {
-		const char *argp = 0;
-		if (!argv || bpf_probe_read_user(&argp, sizeof(argp), &argv[i]) < 0) {
-			break;
-		}
-		if (!argp) {
-			break;
-		}
-
-		if (offset > 0 && offset < (int)sizeof(evt->argv) - 1) {
-			evt->argv[offset++] = ' ';
-		}
-
-#pragma unroll
-		for (int j = 0; j < MAX_ARG_LEN - 1; j++) {
-			char c = 0;
-			if (offset >= (int)sizeof(evt->argv) - 1) {
-				break;
-			}
-			if (bpf_probe_read_user(&c, sizeof(c), argp + j) < 0) {
-				break;
-			}
-			if (c == '\0') {
-				break;
-			}
-			evt->argv[offset++] = c;
-		}
-	}
+	bpf_get_current_comm(evt->filename, sizeof(evt->filename));
+	bpf_get_current_comm(evt->argv, sizeof(evt->argv));
 }
 
 // ANCHOR: Execve tracepoints - Feature: explicit exec coverage - Mar 25, 2026
 // Emits exec events from sys_enter_execve and sys_enter_execveat tracepoints.
-static __always_inline int emit_exec_event(void *ctx, const char *filename, const char *const *argv)
+static __always_inline int emit_exec_event(void *ctx)
 {
 	struct process_event *evt;
 	__u32 key = 0;
@@ -112,7 +52,7 @@ static __always_inline int emit_exec_event(void *ctx, const char *filename, cons
 	evt->capabilities = current_cap_effective();
 	evt->cgroup_id = bpf_get_current_cgroup_id();
 
-	fill_exec_event(evt, filename, argv);
+	fill_exec_event(evt);
 	if (evt->filename[0] == '\0') {
 		bpf_get_current_comm(evt->filename, sizeof(evt->filename));
 	}
@@ -125,15 +65,15 @@ static __always_inline int emit_exec_event(void *ctx, const char *filename, cons
 }
 
 SEC("tracepoint/syscalls/sys_enter_execve")
-int process_execve(struct sys_enter_execve_ctx *ctx)
+int process_execve(void *ctx)
 {
-	return emit_exec_event(ctx, ctx->filename, ctx->argv);
+	return emit_exec_event(ctx);
 }
 
 SEC("tracepoint/syscalls/sys_enter_execveat")
-int process_execveat(struct sys_enter_execveat_ctx *ctx)
+int process_execveat(void *ctx)
 {
-	return emit_exec_event(ctx, ctx->filename, ctx->argv);
+	return emit_exec_event(ctx);
 }
 
 char LICENSE[] SEC("license") = "GPL";

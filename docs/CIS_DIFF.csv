@@ -1,0 +1,28 @@
+change_type,control_id,v1.8_title,v1.8_level,v1.9_title,v1.9_level,notes
+added,4.3.1,,,"Ensure that the kube-proxy metrics service is bound to localhost",Automated,New kube-proxy section in v1.9
+removed,1.2.12,"Ensure that the admission control plugin SecurityContextDeny is set if PodSecurityPolicy is not used",Manual,,,Present in v1.8 TOC; not listed in v1.9 TOC
+requirement_changed,1.2.3,"Ensure that the --DenyServiceExternalIPs is not set",Automated,"Ensure that the --DenyServiceExternalIPs is set",Manual,Requirement inverted + status change
+status_changed,1.1.10,"Ensure that the Container Network Interface file ownership is set to root",Manual,"Ensure that the Container Network Interface file ownership is set to root",Automated,Manual→Automated
+status_changed,1.1.11,"Ensure that the etcd data directory permissions are set to 700 or more restrictive",Automated,"Ensure that the etcd data directory permissions are set to 700 or more restrictive",Manual,Automated→Manual
+status_changed,2.1,"Ensure that the --cert-file and --key-file arguments are set as appropriate",Automated,"Ensure that the --cert-file and --key-file arguments are set as appropriate",Manual,Automated→Manual
+status_changed,2.2,"Ensure that the --client-cert-auth argument is set to true",Automated,"Ensure that the --client-cert-auth argument is set to true",Manual,Automated→Manual
+status_changed,2.3,"Ensure that the --auto-tls argument is not set to true",Automated,"Ensure that the --auto-tls argument is not set to true",Manual,Automated→Manual
+status_changed,2.4,"Ensure that the --peer-cert-file and --peer-key-file arguments are set as appropriate",Automated,"Ensure that the --peer-cert-file and --peer-key-file arguments are set as appropriate",Manual,Automated→Manual
+status_changed,2.5,"Ensure that the --peer-client-cert-auth argument is set to true",Automated,"Ensure that the --peer-client-cert-auth argument is set to true",Manual,Automated→Manual
+status_changed,2.6,"Ensure that the --peer-auto-tls argument is not set to true",Automated,"Ensure that the --peer-auto-tls argument is not set to true",Manual,Automated→Manual
+status_changed,2.7,"Ensure that a unique Certificate Authority is used for etcd",Automated,"Ensure that a unique Certificate Authority is used for etcd",Manual,Automated→Manual
+status_changed,5.1.1,"Ensure that the cluster-admin role is only used where required",Manual,"Ensure that the cluster-admin role is only used where required",Automated,Manual→Automated
+status_changed,5.1.2,"Minimize access to secrets",Manual,"Minimize access to secrets",Automated,Manual→Automated
+status_changed,5.1.3,"Minimize wildcard use in Roles and ClusterRoles",Manual,"Minimize wildcard use in Roles and ClusterRoles",Automated,Manual→Automated
+status_changed,5.1.4,"Minimize access to create pods",Manual,"Minimize access to create pods",Automated,Manual→Automated
+status_changed,5.1.5,"Ensure that default service accounts are not actively used.",Manual,"Ensure that default service accounts are not actively used.",Automated,Manual→Automated
+status_changed,5.1.6,"Ensure that Service Account Tokens are only mounted where necessary",Manual,"Ensure that Service Account Tokens are only mounted where necessary",Automated,Manual→Automated
+status_changed,5.2.3,"Minimize the admission of containers wishing to share the host process ID namespace",Automated,"Minimize the admission of containers wishing to share the host process ID namespace",Manual,Automated→Manual
+status_changed,5.2.4,"Minimize the admission of containers wishing to share the host IPC namespace",Automated,"Minimize the admission of containers wishing to share the host IPC namespace",Manual,Automated→Manual
+status_changed,5.2.5,"Minimize the admission of containers wishing to share the host network namespace",Automated,"Minimize the admission of containers wishing to share the host network namespace",Manual,Automated→Manual
+status_changed,5.2.6,"Minimize the admission of containers with allowPrivilegeEscalation",Automated,"Minimize the admission of containers with allowPrivilegeEscalation",Manual,Automated→Manual
+status_changed,5.2.7,"Minimize the admission of root containers",Automated,"Minimize the admission of root containers",Manual,Automated→Manual
+status_changed,5.2.8,"Minimize the admission of containers with the NET_RAW capability",Automated,"Minimize the admission of containers with the NET_RAW capability",Manual,Automated→Manual
+status_changed,5.2.9,"Minimize the admission of containers with added capabilities",Automated,"Minimize the admission of containers with added capabilities",Manual,Automated→Manual
+renumbered,1.2.13→1.2.12,"Ensure that the admission control plugin ServiceAccount is set",Automated,"Ensure that the admission control plugin ServiceAccount is set",Automated,ID shifts after removal of 1.2.12 SecurityContextDeny
+
