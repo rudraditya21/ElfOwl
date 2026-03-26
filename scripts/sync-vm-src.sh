@@ -7,7 +7,11 @@ KEEP_ARCHIVE=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-LOCAL_ARCHIVE="/tmp/owl-agent-src.tgz"
+# ANCHOR: Local archive path - Fix: Multipass snap sandbox - Mar 25, 2026
+# Multipass snap has restricted filesystem access due to confinement. It can access
+# the home directory and current working directory, but not /tmp. Create archive in
+# the project root directory where it's accessible to multipass transfer.
+LOCAL_ARCHIVE="${PROJECT_ROOT}/.owl-agent-src.tgz"
 VM_ARCHIVE="/tmp/owl-agent-src.tgz"
 
 usage() {
@@ -50,6 +54,7 @@ COPYFILE_DISABLE=1 tar -czf "$LOCAL_ARCHIVE" \
   --exclude='.gocache' \
   --exclude='.gomodcache' \
   --exclude='*.DS_Store' \
+  --exclude='.owl-agent-src.tgz' \
   -C "$PROJECT_ROOT/.." "$(basename "$PROJECT_ROOT")"
 
 echo "[sync] Transferring archive to VM..."

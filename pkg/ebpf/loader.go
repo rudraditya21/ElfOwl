@@ -151,9 +151,9 @@ func DefaultLoadOptions() LoadOptions {
 func programDefinitions(opts LoadOptions) []programDefinition {
 	return []programDefinition{
 		{
-			Name:            ProcessProgramName,
-			Description:     "process execution",
-			MapName:         ProcessEventsMap,
+			Name:        ProcessProgramName,
+			Description: "process execution",
+			MapName:     ProcessEventsMap,
 			// ANCHOR: Process tracepoint selection - Feature: execve/execveat - Mar 25, 2026
 			TracepointGroup: "syscalls",
 			TracepointName:  "sys_enter_execve",
@@ -245,7 +245,7 @@ func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions)
 
 	// ANCHOR: Multi-tracepoint attach - Feature: advanced probes - Mar 25, 2026
 	// Attach every tracepoint/raw_tracepoint section found in the collection.
-	links, programs, attachInfo, err := attachPrograms(collection.Programs, sectionByName)
+	links, programs, attachInfo, err := attachPrograms(logger, def.Name, collection.Programs, sectionByName)
 	if err != nil {
 		collection.Close()
 		return nil, err
@@ -304,7 +304,6 @@ func loadProgramSet(logger *zap.Logger, def programDefinition, opts LoadOptions)
 	}, nil
 }
 
-
 // ANCHOR: Multi-tracepoint attach helpers - Feature: advanced probes - Mar 25, 2026
 // Parses program sections and attaches every tracepoint/raw_tracepoint program.
 type attachInfo struct {
@@ -314,7 +313,7 @@ type attachInfo struct {
 	Tracepoint  string
 }
 
-func attachPrograms(programs map[string]*ebpf.Program, sections map[string]string) ([]link.Link, map[string]*ebpf.Program, []attachInfo, error) {
+func attachPrograms(logger *zap.Logger, setName string, programs map[string]*ebpf.Program, sections map[string]string) ([]link.Link, map[string]*ebpf.Program, []attachInfo, error) {
 	links := make([]link.Link, 0)
 	attached := make(map[string]*ebpf.Program)
 	infos := make([]attachInfo, 0)
@@ -347,6 +346,22 @@ func attachPrograms(programs map[string]*ebpf.Program, sections map[string]strin
 		}
 
 		if err != nil {
+			if isMissingTracepointError(err) {
+				if logger != nil {
+					tracepoint := tpName
+					if kind == "tracepoint" {
+						tracepoint = fmt.Sprintf("%s/%s", group, tpName)
+					}
+					logger.Warn("skipping unavailable tracepoint",
+						zap.String("program", setName),
+						zap.String("section", section),
+						zap.String("attach_type", kind),
+						zap.String("tracepoint", tracepoint),
+						zap.Error(err),
+					)
+				}
+				continue
+			}
 			closeLinks(links)
 			return nil, nil, nil, fmt.Errorf("attach program %s (%s): %w", name, section, err)
 		}
@@ -366,6 +381,27 @@ func attachPrograms(programs map[string]*ebpf.Program, sections map[string]strin
 	}
 
 	return links, attached, infos, nil
+}
+
+func isMissingTracepointError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "enoent") {
+		return true
+	}
+
+	if strings.Contains(msg, "no such file or directory") &&
+		(strings.Contains(msg, "/events/") || strings.Contains(msg, "tracepoint")) {
+		return true
+	}
+
+	return false
 }
 
 func parseTracepointSection(section string) (kind, group, name string, ok bool) {

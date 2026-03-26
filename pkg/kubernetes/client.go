@@ -66,6 +66,13 @@ func (c *Client) GetClientset() *kubernetes.Clientset {
 	return c.clientset
 }
 
+// GetCache returns the metadata cache for direct access to cgroup mappings
+// ANCHOR: Cache accessor for cgroup fallback lookup - Fix PR-23 #3 /proc race - Mar 25, 2026
+// Used by enricher to resolve cgroupID -> pod mappings without K8s API calls
+func (c *Client) GetCache() *MetadataCache {
+	return c.cache
+}
+
 // GetPodMetadata retrieves pod metadata from K8s API
 // ANCHOR: Pod metadata query from K8s API - Phase 2.2, Dec 26, 2025
 // Retrieves pod name, namespace, UID, service account, image, and labels
@@ -293,6 +300,7 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 
 	// First, try querying just the agent's namespace
 	pods, err := c.clientset.CoreV1().Pods(agentNamespace).List(ctx, metav1.ListOptions{})
+	agentListErr := err
 	if err == nil {
 		// Search agent namespace first
 		for _, pod := range pods.Items {
@@ -314,9 +322,10 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 	// Query all pods in all namespaces (expensive operation, done as fallback)
 	allPods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		// If we can't list pods, return nil gracefully
-		// Enricher will use defaults rather than failing
-		return nil, nil
+		if agentListErr != nil {
+			return nil, fmt.Errorf("failed to list pods in agent namespace %q: %v; cluster-wide list failed: %w", agentNamespace, agentListErr, err)
+		}
+		return nil, fmt.Errorf("failed to list pods cluster-wide: %w", err)
 	}
 
 	// Search for matching container ID across all pods
@@ -721,6 +730,89 @@ func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace 
 	return false
 }
 
+// ListAllPods returns a map of all pods across all namespaces with their metadata.
+// ANCHOR: List all pods for cgroup pre-caching - Fix PR-23 #3 /proc race - Mar 25, 2026
+// Returns map with key "namespace/podname" for easy lookup of pod by identifier.
+// Used at enricher startup to pre-populate container ID to pod mappings.
+// Fails gracefully if K8s API is unavailable (returns empty map with error).
+func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, error) {
+	podList, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return make(map[string]*PodMetadata), err
+	}
+
+	result := make(map[string]*PodMetadata)
+	for _, pod := range podList.Items {
+		// Extract metadata for each pod
+		podMeta := &PodMetadata{
+			Name:           pod.Name,
+			Namespace:      pod.Namespace,
+			UID:            string(pod.UID),
+			ServiceAccount: pod.Spec.ServiceAccountName,
+			Labels:         pod.Labels,
+		}
+
+		// ANCHOR: All-container ID extraction for multi-container mapping - Fix PR-23 #6 - Mar 26, 2026
+		// Iterate ContainerStatuses, InitContainerStatuses, EphemeralContainerStatuses to collect
+		// all container IDs so sidecars and init containers get cgroup→pod mappings registered.
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.ContainerID == "" {
+				continue
+			}
+			parts := strings.Split(cs.ContainerID, "://")
+			id := cs.ContainerID
+			if len(parts) == 2 {
+				id = parts[1]
+			}
+			podMeta.ContainerIDs = append(podMeta.ContainerIDs, id)
+		}
+		for _, cs := range pod.Status.InitContainerStatuses {
+			if cs.ContainerID == "" {
+				continue
+			}
+			parts := strings.Split(cs.ContainerID, "://")
+			id := cs.ContainerID
+			if len(parts) == 2 {
+				id = parts[1]
+			}
+			podMeta.ContainerIDs = append(podMeta.ContainerIDs, id)
+		}
+		for _, cs := range pod.Status.EphemeralContainerStatuses {
+			if cs.ContainerID == "" {
+				continue
+			}
+			parts := strings.Split(cs.ContainerID, "://")
+			id := cs.ContainerID
+			if len(parts) == 2 {
+				id = parts[1]
+			}
+			podMeta.ContainerIDs = append(podMeta.ContainerIDs, id)
+		}
+
+		// Keep ContainerID/ContainerName/Image from first main container for backward compat
+		if len(pod.Status.ContainerStatuses) > 0 {
+			cs := pod.Status.ContainerStatuses[0]
+			podMeta.Image = cs.ImageID
+			podMeta.ContainerName = cs.Name
+
+			// Extract container ID from containerID string (format: docker://xyz or containerd://xyz)
+			if cs.ContainerID != "" {
+				parts := strings.Split(cs.ContainerID, "://")
+				if len(parts) == 2 {
+					podMeta.ContainerID = parts[1]
+				} else {
+					podMeta.ContainerID = cs.ContainerID
+				}
+			}
+		}
+
+		key := pod.Namespace + "/" + pod.Name
+		result[key] = podMeta
+	}
+
+	return result, nil
+}
+
 // Data structures for Kubernetes metadata
 // ANCHOR: PodMetadata and NodeMetadata types used by enrichment - Phase 2.2, Dec 26, 2025
 // These types are defined in the kubernetes package to avoid circular imports.
@@ -737,6 +829,16 @@ type PodMetadata struct {
 	Labels         map[string]string
 	OwnerRef       *OwnerReference
 	ContainerName  string
+
+	// ANCHOR: Container and cgroup ID fields for cgroup mapping - Fix PR-23 #3 /proc race - Mar 25, 2026
+	// ContainerID extracted from pod container status (e.g., docker://xyz or containerd://xyz)
+	// CgroupID captured from kernel for race-free pod resolution when /proc fails
+	ContainerID string
+	CgroupID    uint64
+	// ANCHOR: All container IDs for multi-container pod mapping - Fix PR-23 #6 - Mar 26, 2026
+	// Includes IDs from ContainerStatuses, InitContainerStatuses, EphemeralContainerStatuses.
+	// Used by refreshCgroupPodMappings to register cgroup mappings for all containers.
+	ContainerIDs []string
 
 	// ANCHOR: Security context fields extracted from pod spec - Phase 2.2 fix, Dec 26, 2025
 	// These fields are populated by extracting values from pod.Spec security context

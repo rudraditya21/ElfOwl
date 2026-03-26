@@ -54,3 +54,9 @@ pkg/ebpf/programs/vmlinux.h
 *.flv
 *.mov
 *.wmv
+
+# Object files 
+.o
+
+# Temporary sync archives
+.owl-agent-src.tgz

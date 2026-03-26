@@ -14,8 +14,13 @@ type MetadataCache struct {
 	pods              map[string]*PodMetadata
 	nodes             map[string]*NodeMetadata
 	containerMappings map[string]string // containerID -> "namespace/podname"
-	expiry            map[string]time.Time
-	ttlSeconds        int64
+	// ANCHOR: cgroupID to pod mapping cache - Fix PR-23 #3 /proc race - Mar 25, 2026
+	// Maps kernel cgroup IDs (captured at event time, race-free) to "namespace/podname"
+	// for direct pod resolution without relying on PID or container ID lookups.
+	cgroupMappings map[uint64]string // cgroupID -> "namespace/podname"
+	cgroupExpiry   map[uint64]time.Time
+	expiry         map[string]time.Time
+	ttlSeconds     int64
 }
 
 // NewMetadataCache creates a new metadata cache
@@ -24,6 +29,8 @@ func NewMetadataCache(ttlSeconds int64) *MetadataCache {
 		pods:              make(map[string]*PodMetadata),
 		nodes:             make(map[string]*NodeMetadata),
 		containerMappings: make(map[string]string),
+		cgroupMappings:    make(map[uint64]string),
+		cgroupExpiry:      make(map[uint64]time.Time),
 		expiry:            make(map[string]time.Time),
 		ttlSeconds:        ttlSeconds,
 	}
@@ -87,6 +94,8 @@ func (m *MetadataCache) Clear() {
 	m.pods = make(map[string]*PodMetadata)
 	m.nodes = make(map[string]*NodeMetadata)
 	m.containerMappings = make(map[string]string)
+	m.cgroupMappings = make(map[uint64]string)
+	m.cgroupExpiry = make(map[uint64]time.Time)
 	m.expiry = make(map[string]time.Time)
 }
 
@@ -122,4 +131,31 @@ func (m *MetadataCache) SetContainerMapping(containerID, namespacedPodName strin
 
 	m.containerMappings[containerID] = namespacedPodName
 	m.expiry[containerID] = time.Now().Add(time.Duration(m.ttlSeconds) * time.Second)
+}
+
+// GetCgroupMapping retrieves cached cgroup ID to pod mapping
+func (m *MetadataCache) GetCgroupMapping(cgroupID uint64) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	// ANCHOR: cgroupMapping TTL expiry - Fix PR-23 #5 stale cgroup reuse - Mar 26, 2026
+	// CgroupIDs can be reused after pod restarts. Expired entries are stale and must not
+	// be returned — prevents misattribution to old pods after cgroup ID reuse.
+	if expiry, ok := m.cgroupExpiry[cgroupID]; ok && time.Now().After(expiry) {
+		return "", false
+	}
+
+	mapping, found := m.cgroupMappings[cgroupID]
+	return mapping, found
+}
+
+// SetCgroupMapping stores cgroup ID to pod name mapping
+// ANCHOR: cgroupID -> pod cache population - Fix PR-23 #3 /proc race - Mar 25, 2026
+// Caches cgroup IDs for direct pod resolution when /proc lookup fails.
+func (m *MetadataCache) SetCgroupMapping(cgroupID uint64, namespacedPodName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.cgroupMappings[cgroupID] = namespacedPodName
+	m.cgroupExpiry[cgroupID] = time.Now().Add(time.Duration(m.ttlSeconds) * time.Second)
 }

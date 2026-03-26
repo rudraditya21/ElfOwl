@@ -106,58 +106,69 @@ SEC("tracepoint/tcp/tcp_connect")
 int network_monitor(struct trace_event_raw_tcp_event_sk *ctx)
 {
 	struct network_event evt = {};
+	struct trace_event_raw_tcp_event_sk tcp = {};
 
-	if (ctx->family != AF_INET && ctx->family != AF_INET6) {
+	if (bpf_probe_read_kernel(&tcp, sizeof(tcp), ctx) < 0) {
+		return 0;
+	}
+
+	if (tcp.family != AF_INET && tcp.family != AF_INET6) {
 		return 0;
 	}
 
 	evt.pid = current_pid();
-	evt.family = ctx->family;
-	evt.sport = ctx->sport;
-	evt.dport = ctx->dport;
+	evt.family = tcp.family;
+	evt.sport = tcp.sport;
+	evt.dport = tcp.dport;
 	evt.protocol = IPPROTO_TCP;
 	evt.direction = NET_DIR_OUTBOUND;
 	evt.state = 0;
 	evt.netns = current_netns_inum();
 	evt.cgroup_id = bpf_get_current_cgroup_id();
 
-	if (ctx->family == AF_INET) {
-		evt.saddr = pack_ipv4(ctx->saddr);
-		evt.daddr = pack_ipv4(ctx->daddr);
+	if (tcp.family == AF_INET) {
+		evt.saddr = pack_ipv4(tcp.saddr);
+		evt.daddr = pack_ipv4(tcp.daddr);
 	} else {
-		__builtin_memcpy(evt.saddr_v6, ctx->saddr_v6, sizeof(evt.saddr_v6));
-		__builtin_memcpy(evt.daddr_v6, ctx->daddr_v6, sizeof(evt.daddr_v6));
+		__builtin_memcpy(evt.saddr_v6, tcp.saddr_v6, sizeof(evt.saddr_v6));
+		__builtin_memcpy(evt.daddr_v6, tcp.daddr_v6, sizeof(evt.daddr_v6));
 	}
 
 	SUBMIT_EVENT(ctx, network_events, &evt);
 	return 0;
 }
 
-SEC("tracepoint/inet_sock/inet_sock_set_state")
+// SEC("tracepoint/inet_sock/inet_sock_set_state")
+SEC("tracepoint/sock/inet_sock_set_state")
 int network_state_monitor(struct trace_event_raw_inet_sock_set_state *ctx)
 {
 	struct network_event evt = {};
+	struct trace_event_raw_inet_sock_set_state sk_state = {};
 
-	if (ctx->family != AF_INET && ctx->family != AF_INET6) {
+	if (bpf_probe_read_kernel(&sk_state, sizeof(sk_state), ctx) < 0) {
+		return 0;
+	}
+
+	if (sk_state.family != AF_INET && sk_state.family != AF_INET6) {
 		return 0;
 	}
 
 	evt.pid = current_pid();
-	evt.family = ctx->family;
-	evt.sport = ctx->sport;
-	evt.dport = ctx->dport;
-	evt.protocol = (__u8)ctx->protocol;
-	evt.direction = infer_direction(ctx->oldstate, ctx->newstate);
-	evt.state = (__u8)ctx->newstate;
+	evt.family = sk_state.family;
+	evt.sport = sk_state.sport;
+	evt.dport = sk_state.dport;
+	evt.protocol = (__u8)sk_state.protocol;
+	evt.direction = infer_direction(sk_state.oldstate, sk_state.newstate);
+	evt.state = (__u8)sk_state.newstate;
 	evt.netns = current_netns_inum();
 	evt.cgroup_id = bpf_get_current_cgroup_id();
 
-	if (ctx->family == AF_INET) {
-		evt.saddr = pack_ipv4(ctx->saddr);
-		evt.daddr = pack_ipv4(ctx->daddr);
+	if (sk_state.family == AF_INET) {
+		evt.saddr = pack_ipv4(sk_state.saddr);
+		evt.daddr = pack_ipv4(sk_state.daddr);
 	} else {
-		__builtin_memcpy(evt.saddr_v6, ctx->saddr_v6, sizeof(evt.saddr_v6));
-		__builtin_memcpy(evt.daddr_v6, ctx->daddr_v6, sizeof(evt.daddr_v6));
+		__builtin_memcpy(evt.saddr_v6, sk_state.saddr_v6, sizeof(evt.saddr_v6));
+		__builtin_memcpy(evt.daddr_v6, sk_state.daddr_v6, sizeof(evt.daddr_v6));
 	}
 
 	SUBMIT_EVENT(ctx, network_events, &evt);
@@ -168,12 +179,17 @@ SEC("tracepoint/syscalls/sys_enter_sendto")
 int network_udp_send(struct sys_enter_sendto_ctx *ctx)
 {
 	struct network_event evt = {};
+	struct sys_enter_sendto_ctx sendto = {};
 	__u16 family = 0;
 	__u16 dport = 0;
 	__u32 daddr = 0;
 	__u8 daddr_v6[16] = {};
 
-	if (read_udp_destination(ctx->addr, (__u32)ctx->addr_len, &family, &dport, &daddr, daddr_v6) < 0) {
+	if (bpf_probe_read_kernel(&sendto, sizeof(sendto), ctx) < 0) {
+		return 0;
+	}
+
+	if (read_udp_destination(sendto.addr, (__u32)sendto.addr_len, &family, &dport, &daddr, daddr_v6) < 0) {
 		return 0;
 	}
 

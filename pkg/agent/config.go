@@ -103,6 +103,10 @@ type EnrichmentConfig struct {
 	KubernetesMetadata bool          `yaml:"kubernetes_metadata"`
 	MetadataCacheSize  int           `yaml:"metadata_cache_size"`
 	MetadataCacheTTL   time.Duration `yaml:"metadata_cache_ttl"`
+	// ANCHOR: kubernetes_only flag - Filter: host event discard - Mar 24, 2026
+	// When true (default), events from PIDs with no Kubernetes pod context are discarded.
+	// Set false to process host-process events alongside pod events.
+	KubernetesOnly bool `yaml:"kubernetes_only"`
 }
 
 // EvidenceConfig defines evidence processing settings
@@ -239,6 +243,13 @@ func (c *Config) applyEnvironmentOverrides() {
 			c.Agent.Kubernetes.InCluster = parsed
 		}
 	}
+
+	// ANCHOR: kubernetes_only env override - Filter: host event discard - Mar 24, 2026
+	if v := os.Getenv("OWL_KUBERNETES_ONLY"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			c.Agent.Enrichment.KubernetesOnly = parsed
+		}
+	}
 }
 
 // Validate validates the configuration
@@ -261,6 +272,14 @@ func (c *Config) Validate() error {
 
 	if c.Agent.OWL.Auth.TokenPath == "" {
 		c.Agent.OWL.Auth.TokenPath = "/var/run/secrets/owl-jwt-token"
+	}
+
+	// ANCHOR: Config guard kubernetes_metadata+kubernetes_only - Fix PR-23 HIGH - Mar 25, 2026
+	// If kubernetes_metadata is disabled, K8s client becomes nil, so all events lose pod context.
+	// With kubernetes_only=true (default), this discards ALL events, not just host events.
+	// Catch this invalid config combination at startup, not at runtime.
+	if !c.Agent.Enrichment.KubernetesMetadata && c.Agent.Enrichment.KubernetesOnly {
+		return fmt.Errorf("invalid enrichment config: kubernetes_metadata=false with kubernetes_only=true will discard all events; set kubernetes_only=false to process events without K8s metadata")
 	}
 
 	return nil
@@ -342,6 +361,7 @@ func DefaultConfig() *Config {
 				KubernetesMetadata: true,
 				MetadataCacheSize:  10000,
 				MetadataCacheTTL:   1 * time.Minute,
+				KubernetesOnly:     true, // default: K8s-native mode
 			},
 			Evidence: EvidenceConfig{
 				Signing: SigningConfig{

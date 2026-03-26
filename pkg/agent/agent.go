@@ -7,6 +7,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -27,6 +28,25 @@ import (
 	"github.com/udyansh/elf-owl/pkg/rules"
 )
 
+// EnrichmentProvider defines the enricher methods used by agent handlers.
+type EnrichmentProvider interface {
+	EnrichProcessEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
+	EnrichNetworkEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
+	EnrichDNSEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
+	EnrichFileEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
+	EnrichCapabilityEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
+}
+
+// MetricsRecorder defines metrics methods used by the agent.
+type MetricsRecorder interface {
+	RecordEventProcessed()
+	RecordViolationsFound(n int)
+	RecordEnrichmentError()
+	RecordHostEventDiscarded()
+	RecordK8sLookupFailedDiscarded()
+	SetEventsBuffered(count int)
+}
+
 // Agent is the main compliance observer agent
 type Agent struct {
 	Config *Config
@@ -42,14 +62,14 @@ type Agent struct {
 	// ===== Owl-Specific Components =====
 	K8sClient   *kubernetes.Client
 	RuleEngine  *rules.Engine
-	Enricher    *enrichment.Enricher
+	Enricher    EnrichmentProvider
 	Signer      *evidence.Signer
 	Cipher      *evidence.Cipher
 	APIClient   *api.Client
 	EventBuffer *evidence.Buffer
 
 	// Metrics
-	MetricsRegistry *metrics.Registry
+	MetricsRegistry MetricsRecorder
 
 	// Control channels
 	done       chan struct{}
@@ -141,6 +161,16 @@ func NewAgent(config *Config) (*Agent, error) {
 	agent.K8sClient = k8sClient
 	agent.Logger.Info("kubernetes client initialized")
 
+	enricherK8sClient := agent.K8sClient
+	if !config.Agent.Enrichment.KubernetesMetadata {
+		agent.Logger.Warn("kubernetes metadata enrichment disabled", zap.Bool("kubernetes_only", config.Agent.Enrichment.KubernetesOnly))
+		if config.Agent.Enrichment.KubernetesOnly {
+			// Note: This condition should be caught by config.Validate(), but log the accuracy here for clarity.
+			agent.Logger.Warn("kubernetes_only enabled while kubernetes_metadata is disabled; all events without K8s context will be discarded")
+		}
+		enricherK8sClient = nil
+	}
+
 	// Initialize rule engine with configurable rule source
 	// ANCHOR: Rule engine initialization with file and ConfigMap support - Phase 3.2 Week 3
 	// Supports loading rules from YAML file, Kubernetes ConfigMap, or hardcoded defaults
@@ -171,7 +201,7 @@ func NewAgent(config *Config) (*Agent, error) {
 	}
 
 	// Initialize enricher
-	enricher, err := enrichment.NewEnricher(agent.K8sClient, config.Agent.ClusterID, config.Agent.NodeName)
+	enricher, err := enrichment.NewEnricher(enricherK8sClient, config.Agent.ClusterID, config.Agent.NodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enricher: %w", err)
 	}
@@ -380,6 +410,171 @@ func (a *Agent) Start(ctx context.Context) error {
 	return nil
 }
 
+func (a *Agent) handleRuntimeEvent(
+	ctx context.Context,
+	rawEnriched *enrichment.EnrichedEvent,
+	enrichFn func(context.Context, interface{}) (*enrichment.EnrichedEvent, error),
+	hostDiscardMsg string,
+	hostProcessMsg string,
+	apiDiscardMsg string,
+	apiFallbackMsg string,
+	logViolationDetails bool,
+) {
+	if rawEnriched == nil {
+		return
+	}
+
+	enrichedEvent, err := enrichFn(ctx, rawEnriched.RawEvent)
+	if err != nil {
+		// ANCHOR: Discard host events - Filter: K8s-native compliance - Mar 24, 2026
+		// ErrNoKubernetesContext = PID has no pod association.
+		// Honour kubernetes_only config: discard (true) or fall through to partial (false).
+		if errors.Is(err, enrichment.ErrNoKubernetesContext) {
+			if a.Config.Agent.Enrichment.KubernetesOnly {
+				a.Logger.Debug(hostDiscardMsg)
+				a.MetricsRegistry.RecordHostEventDiscarded()
+				return
+			}
+			// kubernetes_only=false: process host event with non-K8s enrichment
+			a.Logger.Debug(hostProcessMsg)
+			if enrichedEvent == nil {
+				enrichedEvent = rawEnriched
+			}
+		} else {
+			// ANCHOR: Fail-closed on K8s lookup errors - Fix PR-23 HIGH #2 - Mar 25, 2026
+			// During K8s API outage/throttling/RBAC failure, pod lookup errors must not
+			// bypass kubernetes_only filtering — discard to prevent false positives.
+			a.MetricsRegistry.RecordEnrichmentError()
+			if a.Config.Agent.Enrichment.KubernetesOnly {
+				a.Logger.Debug(apiDiscardMsg, zap.Error(err))
+				// ANCHOR: K8s lookup fail-closed discard metric - Fix PR-23 #7 - Mar 26, 2026
+				// Record separately from host events to distinguish API failures from true host events.
+				a.MetricsRegistry.RecordK8sLookupFailedDiscarded()
+				return
+			}
+			a.Logger.Debug(apiFallbackMsg, zap.Error(err))
+			// Fall back to partially-enriched event from monitor
+			enrichedEvent = rawEnriched
+		}
+	}
+
+	violations := a.RuleEngine.Match(enrichedEvent)
+	if len(violations) > 0 {
+		a.metricsMutex.Lock()
+		a.violationsFound += int64(len(violations))
+		a.metricsMutex.Unlock()
+		// ANCHOR: Count every violation - Medium finding fix - Feb 18, 2026
+		// WHY: Previously called RecordViolationFound() once per event, undercounting
+		//      when multiple rules matched the same event.
+		a.MetricsRegistry.RecordViolationsFound(len(violations))
+		if logViolationDetails {
+			for _, violation := range violations {
+				a.Logger.Info("CIS violation detected",
+					zap.String("control", violation.ControlID),
+					zap.String("severity", violation.Severity),
+					zap.String("pod", violation.Pod.PodName),
+				)
+			}
+		}
+	}
+
+	// Queue for evidence processing
+	a.EventBuffer.Enqueue(enrichedEvent, violations)
+	a.metricsMutex.Lock()
+	a.eventsProcessed++
+	a.metricsMutex.Unlock()
+	a.MetricsRegistry.RecordEventProcessed()
+}
+
+func (a *Agent) handleProcessEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	// ANCHOR: Wire enrichment pipeline for process events - Feb 18, 2026
+	// WHY: Monitors only populate event-specific context (ProcessContext).
+	//      K8s metadata (pod name, namespace, SA, labels) and container
+	//      context are added here by the Enricher via K8s API lookup.
+	// WHAT: Call EnrichProcessEvent with the raw eBPF event to get a fully
+	//       populated EnrichedEvent including K8s and container context.
+	// HOW: Pass rawEvent interface{} to avoid circular imports; enricher
+	//      uses reflection to extract fields from the concrete event struct.
+	a.handleRuntimeEvent(
+		ctx,
+		rawEnriched,
+		a.Enricher.EnrichProcessEvent,
+		"discarded host process event: no pod context",
+		"processing host process event (kubernetes_only disabled)",
+		"discarded process event: K8s lookup failed and kubernetes_only=true",
+		"process event enrichment failed, using partial event",
+		true,
+	)
+}
+
+func (a *Agent) handleNetworkEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	// ANCHOR: Wire enrichment pipeline for network events - Feb 18, 2026
+	// WHY: Network monitor only fills NetworkContext; K8s/container metadata added here.
+	// WHAT: Enrich raw network event with pod metadata and network policy context.
+	// HOW: EnrichNetworkEvent queries K8s API using container ID from /proc cgroup.
+	a.handleRuntimeEvent(
+		ctx,
+		rawEnriched,
+		a.Enricher.EnrichNetworkEvent,
+		"discarded host network event: no pod context",
+		"processing host network event (kubernetes_only disabled)",
+		"discarded network event: K8s lookup failed and kubernetes_only=true",
+		"network event enrichment failed, using partial event",
+		false,
+	)
+}
+
+func (a *Agent) handleDNSEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	// ANCHOR: Wire enrichment pipeline for DNS events - Feb 18, 2026
+	// WHY: DNS monitor only fills DNSContext; K8s/container metadata added here.
+	// WHAT: Enrich raw DNS event with pod metadata for compliance correlation.
+	// HOW: EnrichDNSEvent uses container ID from /proc to look up pod in K8s API.
+	a.handleRuntimeEvent(
+		ctx,
+		rawEnriched,
+		a.Enricher.EnrichDNSEvent,
+		"discarded host DNS event: no pod context",
+		"processing host DNS event (kubernetes_only disabled)",
+		"discarded DNS event: K8s lookup failed and kubernetes_only=true",
+		"DNS event enrichment failed, using partial event",
+		false,
+	)
+}
+
+func (a *Agent) handleFileEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	// ANCHOR: Wire enrichment pipeline for file events - Feb 18, 2026
+	// WHY: File monitor only fills FileContext; K8s/container metadata added here.
+	// WHAT: Enrich raw file event with pod metadata and read-only FS check.
+	// HOW: EnrichFileEvent checks container security context for ReadOnlyFilesystem.
+	a.handleRuntimeEvent(
+		ctx,
+		rawEnriched,
+		a.Enricher.EnrichFileEvent,
+		"discarded host file event: no pod context",
+		"processing host file event (kubernetes_only disabled)",
+		"discarded file event: K8s lookup failed and kubernetes_only=true",
+		"file event enrichment failed, using partial event",
+		false,
+	)
+}
+
+func (a *Agent) handleCapabilityEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	// ANCHOR: Wire enrichment pipeline for capability events - Feb 18, 2026
+	// WHY: Capability monitor only fills CapabilityContext; K8s context added here.
+	// WHAT: Enrich raw capability event with pod metadata and privilege escalation check.
+	// HOW: EnrichCapabilityEvent maps raw capability ID to Linux capability name.
+	a.handleRuntimeEvent(
+		ctx,
+		rawEnriched,
+		a.Enricher.EnrichCapabilityEvent,
+		"discarded host capability event: no pod context",
+		"processing host capability event (kubernetes_only disabled)",
+		"discarded capability event: K8s lookup failed and kubernetes_only=true",
+		"capability event enrichment failed, using partial event",
+		false,
+	)
+}
+
 // handleProcessEvents handles cilium/ebpf process monitor events
 func (a *Agent) handleProcessEvents(ctx context.Context) {
 	if a.ProcessMonitor == nil {
@@ -390,52 +585,7 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 	for {
 		select {
 		case rawEnriched := <-eventChan:
-			if rawEnriched == nil {
-				continue
-			}
-
-			// ANCHOR: Wire enrichment pipeline for process events - Feb 18, 2026
-			// WHY: Monitors only populate event-specific context (ProcessContext).
-			//      K8s metadata (pod name, namespace, SA, labels) and container
-			//      context are added here by the Enricher via K8s API lookup.
-			// WHAT: Call EnrichProcessEvent with the raw eBPF event to get a fully
-			//       populated EnrichedEvent including K8s and container context.
-			// HOW: Pass rawEvent interface{} to avoid circular imports; enricher
-			//      uses reflection to extract fields from the concrete event struct.
-			enrichedEvent, err := a.Enricher.EnrichProcessEvent(ctx, rawEnriched.RawEvent)
-			if err != nil {
-				a.Logger.Debug("process event enrichment failed, using partial event",
-					zap.Error(err))
-				// Fall back to partially-enriched event from monitor
-				enrichedEvent = rawEnriched
-				a.MetricsRegistry.RecordEnrichmentError()
-			}
-
-			// Run through rule engine
-			violations := a.RuleEngine.Match(enrichedEvent)
-			if len(violations) > 0 {
-				a.metricsMutex.Lock()
-				a.violationsFound += int64(len(violations))
-				a.metricsMutex.Unlock()
-				// ANCHOR: Count every violation - Medium finding fix - Feb 18, 2026
-				// WHY: Previously called RecordViolationFound() once per event, undercounting
-				//      when multiple rules matched the same event.
-				a.MetricsRegistry.RecordViolationsFound(len(violations))
-				for _, violation := range violations {
-					a.Logger.Info("CIS violation detected",
-						zap.String("control", violation.ControlID),
-						zap.String("severity", violation.Severity),
-						zap.String("pod", violation.Pod.PodName),
-					)
-				}
-			}
-
-			// Queue for evidence processing
-			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			a.metricsMutex.Lock()
-			a.eventsProcessed++
-			a.metricsMutex.Unlock()
-			a.MetricsRegistry.RecordEventProcessed()
+			a.handleProcessEvent(ctx, rawEnriched)
 
 		case <-a.done:
 			return
@@ -456,35 +606,7 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 	for {
 		select {
 		case rawEnriched := <-eventChan:
-			if rawEnriched == nil {
-				continue
-			}
-
-			// ANCHOR: Wire enrichment pipeline for network events - Feb 18, 2026
-			// WHY: Network monitor only fills NetworkContext; K8s/container metadata added here.
-			// WHAT: Enrich raw network event with pod metadata and network policy context.
-			// HOW: EnrichNetworkEvent queries K8s API using container ID from /proc cgroup.
-			enrichedEvent, err := a.Enricher.EnrichNetworkEvent(ctx, rawEnriched.RawEvent)
-			if err != nil {
-				a.Logger.Debug("network event enrichment failed, using partial event",
-					zap.Error(err))
-				enrichedEvent = rawEnriched
-				a.MetricsRegistry.RecordEnrichmentError()
-			}
-
-			violations := a.RuleEngine.Match(enrichedEvent)
-			if len(violations) > 0 {
-				a.metricsMutex.Lock()
-				a.violationsFound += int64(len(violations))
-				a.metricsMutex.Unlock()
-				a.MetricsRegistry.RecordViolationsFound(len(violations))
-			}
-
-			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			a.metricsMutex.Lock()
-			a.eventsProcessed++
-			a.metricsMutex.Unlock()
-			a.MetricsRegistry.RecordEventProcessed()
+			a.handleNetworkEvent(ctx, rawEnriched)
 
 		case <-a.done:
 			return
@@ -507,35 +629,7 @@ func (a *Agent) handleDNSEvents(ctx context.Context) {
 	for {
 		select {
 		case rawEnriched := <-eventChan:
-			if rawEnriched == nil {
-				continue
-			}
-
-			// ANCHOR: Wire enrichment pipeline for DNS events - Feb 18, 2026
-			// WHY: DNS monitor only fills DNSContext; K8s/container metadata added here.
-			// WHAT: Enrich raw DNS event with pod metadata for compliance correlation.
-			// HOW: EnrichDNSEvent uses container ID from /proc to look up pod in K8s API.
-			enrichedEvent, err := a.Enricher.EnrichDNSEvent(ctx, rawEnriched.RawEvent)
-			if err != nil {
-				a.Logger.Debug("DNS event enrichment failed, using partial event",
-					zap.Error(err))
-				enrichedEvent = rawEnriched
-				a.MetricsRegistry.RecordEnrichmentError()
-			}
-
-			violations := a.RuleEngine.Match(enrichedEvent)
-			if len(violations) > 0 {
-				a.metricsMutex.Lock()
-				a.violationsFound += int64(len(violations))
-				a.metricsMutex.Unlock()
-				a.MetricsRegistry.RecordViolationsFound(len(violations))
-			}
-
-			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			a.metricsMutex.Lock()
-			a.eventsProcessed++
-			a.metricsMutex.Unlock()
-			a.MetricsRegistry.RecordEventProcessed()
+			a.handleDNSEvent(ctx, rawEnriched)
 
 		case <-a.done:
 			return
@@ -556,35 +650,7 @@ func (a *Agent) handleFileEvents(ctx context.Context) {
 	for {
 		select {
 		case rawEnriched := <-eventChan:
-			if rawEnriched == nil {
-				continue
-			}
-
-			// ANCHOR: Wire enrichment pipeline for file events - Feb 18, 2026
-			// WHY: File monitor only fills FileContext; K8s/container metadata added here.
-			// WHAT: Enrich raw file event with pod metadata and read-only FS check.
-			// HOW: EnrichFileEvent checks container security context for ReadOnlyFilesystem.
-			enrichedEvent, err := a.Enricher.EnrichFileEvent(ctx, rawEnriched.RawEvent)
-			if err != nil {
-				a.Logger.Debug("file event enrichment failed, using partial event",
-					zap.Error(err))
-				enrichedEvent = rawEnriched
-				a.MetricsRegistry.RecordEnrichmentError()
-			}
-
-			violations := a.RuleEngine.Match(enrichedEvent)
-			if len(violations) > 0 {
-				a.metricsMutex.Lock()
-				a.violationsFound += int64(len(violations))
-				a.metricsMutex.Unlock()
-				a.MetricsRegistry.RecordViolationsFound(len(violations))
-			}
-
-			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			a.metricsMutex.Lock()
-			a.eventsProcessed++
-			a.metricsMutex.Unlock()
-			a.MetricsRegistry.RecordEventProcessed()
+			a.handleFileEvent(ctx, rawEnriched)
 
 		case <-a.done:
 			return
@@ -605,35 +671,7 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 	for {
 		select {
 		case rawEnriched := <-eventChan:
-			if rawEnriched == nil {
-				continue
-			}
-
-			// ANCHOR: Wire enrichment pipeline for capability events - Feb 18, 2026
-			// WHY: Capability monitor only fills CapabilityContext; K8s context added here.
-			// WHAT: Enrich raw capability event with pod metadata and privilege escalation check.
-			// HOW: EnrichCapabilityEvent maps raw capability ID to Linux capability name.
-			enrichedEvent, err := a.Enricher.EnrichCapabilityEvent(ctx, rawEnriched.RawEvent)
-			if err != nil {
-				a.Logger.Debug("capability event enrichment failed, using partial event",
-					zap.Error(err))
-				enrichedEvent = rawEnriched
-				a.MetricsRegistry.RecordEnrichmentError()
-			}
-
-			violations := a.RuleEngine.Match(enrichedEvent)
-			if len(violations) > 0 {
-				a.metricsMutex.Lock()
-				a.violationsFound += int64(len(violations))
-				a.metricsMutex.Unlock()
-				a.MetricsRegistry.RecordViolationsFound(len(violations))
-			}
-
-			a.EventBuffer.Enqueue(enrichedEvent, violations)
-			a.metricsMutex.Lock()
-			a.eventsProcessed++
-			a.metricsMutex.Unlock()
-			a.MetricsRegistry.RecordEventProcessed()
+			a.handleCapabilityEvent(ctx, rawEnriched)
 
 		case <-a.done:
 			return

@@ -20,6 +20,11 @@ type Registry struct {
 	pushLatency       prometheus.Histogram
 	enrichmentErrors  prometheus.Counter
 	ruleMatchErrors   prometheus.Counter
+	// ANCHOR: Host event discard metric - Filter: K8s-native compliance - Mar 24, 2026
+	hostEventsDiscarded prometheus.Counter
+	// ANCHOR: K8s lookup fail-closed discard metric - Fix PR-23 #7 - Mar 26, 2026
+	// Separate from hostEventsDiscarded to distinguish API failures from true host events.
+	k8sLookupFailedDiscards prometheus.Counter
 }
 
 // NewRegistry creates a new metrics registry
@@ -57,6 +62,18 @@ func NewRegistry() *Registry {
 		ruleMatchErrors: promauto.NewCounter(prometheus.CounterOpts{
 			Name: "elf_owl_rule_match_errors_total",
 			Help: "Total rule matching errors",
+		}),
+		// ANCHOR: Host event discard metric - Filter: K8s-native compliance - Mar 24, 2026
+		hostEventsDiscarded: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "elf_owl_host_events_discarded_total",
+			Help: "Total host process events discarded due to kubernetes_only filter",
+		}),
+		// ANCHOR: K8s lookup fail-closed discard counter - Fix PR-23 #7 - Mar 26, 2026
+		// Tracks events discarded due to K8s API errors when kubernetes_only=true.
+		// Distinct from host_events_discarded which is strictly for non-pod events.
+		k8sLookupFailedDiscards: promauto.NewCounter(prometheus.CounterOpts{
+			Name: "elf_owl_k8s_lookup_failed_discards_total",
+			Help: "Events discarded due to K8s API lookup failures when kubernetes_only=true (fail-closed)",
 		}),
 	}
 }
@@ -108,6 +125,19 @@ func (r *Registry) RecordPushLatency(seconds float64) {
 // RecordEnrichmentError records an enrichment error
 func (r *Registry) RecordEnrichmentError() {
 	r.enrichmentErrors.Inc()
+}
+
+// RecordHostEventDiscarded records a host event discarded by kubernetes_only filter
+// ANCHOR: Host event discard metric - Filter: K8s-native compliance - Mar 24, 2026
+func (r *Registry) RecordHostEventDiscarded() {
+	r.hostEventsDiscarded.Inc()
+}
+
+// RecordK8sLookupFailedDiscarded records an event discarded because a K8s API lookup
+// failed and kubernetes_only=true (fail-closed policy).
+// ANCHOR: K8s lookup fail-closed discard recorder - Fix PR-23 #7 - Mar 26, 2026
+func (r *Registry) RecordK8sLookupFailedDiscarded() {
+	r.k8sLookupFailedDiscards.Inc()
 }
 
 // RecordRuleMatchError records a rule matching error

@@ -9,14 +9,6 @@
 #define CAP_SYS_BOOT 22
 #define CAP_SYS_PTRACE 19
 
-// This tracepoint format includes cap and cap_opt integer fields.
-struct trace_event_raw_cap_capable {
-	struct trace_entry ent;
-	int cap;
-	int cap_opt;
-	char __data[0];
-};
-
 // Event layout must match pkg/ebpf/types.go: CapabilityEvent.
 struct capability_event {
 	__u32 pid;
@@ -51,11 +43,12 @@ int capability_syscall_track(struct trace_event_raw_sys_enter *ctx)
 }
 
 SEC("tracepoint/capability/cap_capable")
-int capability_monitor(struct trace_event_raw_cap_capable *ctx)
+int capability_monitor(struct bpf_raw_tracepoint_args *ctx)
 {
 	struct capability_event evt = {};
-	__u32 cap = (__u32)ctx->cap;
+
 	__u32 pid = current_pid();
+	__u32 cap = (__u32)ctx->args[2];  // ✅ correct extraction
 	__u32 syscall_id = 0;
 	__u32 *found_id;
 
@@ -77,11 +70,10 @@ int capability_monitor(struct trace_event_raw_cap_capable *ctx)
 	evt.check_type = 1;
 	evt.syscall_id = syscall_id;
 	evt.cgroup_id = bpf_get_current_cgroup_id();
-	// Best effort: retain process comm in syscall_name until explicit syscall
-	// attribution is plumbed for this event shape.
 	bpf_get_current_comm(evt.syscall_name, sizeof(evt.syscall_name));
 
-	SUBMIT_EVENT(ctx, capability_events, &evt);
+	// SUBMIT_EVENT(ctx, capability_events, &evt);
+	bpf_perf_event_output(ctx, &capability_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
 	return 0;
 }
 

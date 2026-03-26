@@ -63,6 +63,7 @@ agent:
     kubernetes_metadata: true
     metadata_cache_size: 10000
     metadata_cache_ttl: 60s
+    kubernetes_only: true    # discard host-process events; set false for bare-metal or mixed deployments
 
   # Evidence signing and encryption
   evidence:
