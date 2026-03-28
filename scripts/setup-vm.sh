@@ -11,6 +11,23 @@ VM_PROJECT_DIR="/home/ubuntu/work/owl-agent"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ANCHOR: VM exec readiness wait - Fix: post-launch SSH race - Mar 28, 2026
+# Multipass can report a VM as launched/running before exec/SSH is reachable.
+wait_for_vm_exec() {
+  local attempts="${1:-45}"
+  local sleep_seconds="${2:-2}"
+  local try
+
+  for try in $(seq 1 "$attempts"); do
+    if multipass exec "$VM_NAME" -- bash -lc "true" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  return 1
+}
+
 usage() {
   cat <<USAGE
 Usage: $(basename "$0") [options]
@@ -55,6 +72,12 @@ fi
 
 echo "[setup] Starting VM '${VM_NAME}'..."
 multipass start "$VM_NAME" >/dev/null 2>&1 || true
+
+echo "[setup] Waiting for VM exec readiness..."
+if ! wait_for_vm_exec 45 2; then
+  echo "[setup] VM '${VM_NAME}' did not become reachable via multipass exec in time."
+  exit 1
+fi
 
 echo "[setup] Installing base packages in VM..."
 multipass exec "$VM_NAME" -- bash -lc '
