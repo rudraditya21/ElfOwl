@@ -109,6 +109,13 @@ else
   COMPLIANCE_STATUS=$?
 fi
 
+echo "[test] Running no-k8s handler behavior tests..."
+if run_test no_k8s_handlers 'go test -mod=mod -v ./pkg/agent -run "TestHandlerFallbackWhenKubernetesOnlyFalse|TestHandlerRuntimeBehaviorMatrix"'; then
+  NO_K8S_STATUS=0
+else
+  NO_K8S_STATUS=$?
+fi
+
 FULL_STATUS="SKIPPED"
 if [[ "$RUN_FULL" -eq 1 ]]; then
   echo "[test] Running full repository tests..."
@@ -135,6 +142,7 @@ echo "=== Event Path Matrix (from VM tests) ==="
 EBPF_LOG="${RESULTS_DIR}/ebpf.log"
 RULES_LOG="${RESULTS_DIR}/rules_integration.log"
 COMPLIANCE_LOG="${RESULTS_DIR}/compliance_events.log"
+NO_K8S_LOG="${RESULTS_DIR}/no_k8s_handlers.log"
 
 matrix_check "process" 'ProcessMonitor_produces_process_execution_events|TestIntegrationRootProcessExecution.*PASS' "$EBPF_LOG"
 matrix_check "network" 'NetworkMonitor_produces_network_connection_events|TestIntegrationNetworkPolicyViolation.*PASS' "$EBPF_LOG"
@@ -143,6 +151,7 @@ matrix_check "file" 'FileMonitor_produces_file_access_events' "$EBPF_LOG"
 matrix_check "capability" 'CapabilityMonitor_produces_capability_usage_events|TestIntegrationCapabilityViolation.*PASS' "$EBPF_LOG"
 matrix_check "pod_spec" '--- PASS: TestBuildPodSpecEventsMultiContainer' "$COMPLIANCE_LOG"
 matrix_check "net_policy" '--- PASS: TestBuildNetworkPolicyEvent' "$COMPLIANCE_LOG"
+matrix_check "no_k8s" '--- PASS: TestHandlerFallbackWhenKubernetesOnlyFalse|--- PASS: TestHandlerRuntimeBehaviorMatrix' "$NO_K8S_LOG"
 
 # Rules-specific status checks
 if [[ "$RULES_STATUS" != "0" ]]; then
@@ -163,11 +172,21 @@ else
   echo "Compliance event suite status: PASS"
 fi
 
+if [[ "$NO_K8S_STATUS" != "0" ]]; then
+  echo
+  echo "No-k8s handler suite status: FAIL (exit ${NO_K8S_STATUS})"
+  multipass exec "$VM_NAME" -- bash -lc "grep -E '^=== RUN|^--- (PASS|FAIL)' '$NO_K8S_LOG' | tail -n 80"
+else
+  echo
+  echo "No-k8s handler suite status: PASS"
+fi
+
 echo
 echo "=== Test Status ==="
 echo "ebpf tests:            ${EBPF_STATUS}"
 echo "rules integration:     ${RULES_STATUS}"
 echo "compliance events:     ${COMPLIANCE_STATUS}"
+echo "no-k8s handlers:       ${NO_K8S_STATUS}"
 echo "kernel eBPF tests:     ${KERNEL_STATUS}"
 echo "full repository tests: ${FULL_STATUS}"
 echo "results dir:           ${RESULTS_DIR}"
@@ -180,6 +199,9 @@ if [[ "$RULES_STATUS" != "0" ]]; then
   exit_code=1
 fi
 if [[ "$COMPLIANCE_STATUS" != "0" ]]; then
+  exit_code=1
+fi
+if [[ "$NO_K8S_STATUS" != "0" ]]; then
   exit_code=1
 fi
 if [[ "$RUN_KERNEL" -eq 1 && "$KERNEL_STATUS" != "0" ]]; then

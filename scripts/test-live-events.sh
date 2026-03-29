@@ -72,6 +72,22 @@ fi
 "$SCRIPT_DIR/start-agent.sh" "${start_args[@]}"
 sleep 2
 
+if [[ "$RUN_NO_K8S" -eq 1 ]]; then
+  echo "[test] Running no-k8s smoke assertions..."
+  "$SCRIPT_DIR/vm-exec.sh" --name "$VM_NAME" --no-cd -- bash -lc "
+    set -euo pipefail
+    curl -sf http://127.0.0.1:9091/health >/dev/null
+    if ! sudo grep -q 'running without Kubernetes client' /var/log/elf-owl/agent.log; then
+      echo 'expected no-k8s startup log not found'
+      exit 1
+    fi
+    if sudo grep -q 'failed to create kubernetes client' /var/log/elf-owl/agent.log; then
+      echo 'unexpected kubernetes client init failure log found'
+      exit 1
+    fi
+  "
+fi
+
 "$SCRIPT_DIR/generate-events.sh" --name "$VM_NAME"
 sleep 2
 
