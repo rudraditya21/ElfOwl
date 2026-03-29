@@ -632,7 +632,7 @@ var CISControls = []*Rule{
 			{
 				Field:    "container.seccomp_profile",
 				Operator: "equals",
-				Value:    "unconfined",
+				Value:    "",
 			},
 		},
 	},
@@ -647,7 +647,7 @@ var CISControls = []*Rule{
 			{
 				Field:    "container.apparmor_profile",
 				Operator: "equals",
-				Value:    "unconfined",
+				Value:    "",
 			},
 		},
 	},

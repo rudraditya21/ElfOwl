@@ -154,6 +154,74 @@ func TestNoDuplicateAppArmorViolationsPerProcessEvent(t *testing.T) {
 	}
 }
 
+func TestPodSpecSeccompRuleTargetsMissingProfile(t *testing.T) {
+	engine, err := NewEngine()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	event := &enrichment.EnrichedEvent{
+		EventType: "pod_spec_check",
+		Timestamp: time.Now(),
+		Kubernetes: &enrichment.K8sContext{
+			ClusterID: "c-1",
+			NodeName:  "n-1",
+			Namespace: "default",
+			PodName:   "p-1",
+			PodUID:    "uid-1",
+		},
+		Container: &enrichment.ContainerContext{
+			ContainerName:  "app",
+			SeccompProfile: "",
+		},
+	}
+
+	violations := engine.Match(event)
+	if !hasControl(violations, "CIS_4.7.1") {
+		t.Fatalf("expected CIS_4.7.1 when seccomp profile is missing on pod_spec_check")
+	}
+
+	event.Container.SeccompProfile = "unconfined"
+	violations = engine.Match(event)
+	if hasControl(violations, "CIS_4.7.1") {
+		t.Fatalf("did not expect CIS_4.7.1 when seccomp profile is explicitly set")
+	}
+}
+
+func TestPodSpecAppArmorRuleTargetsMissingProfile(t *testing.T) {
+	engine, err := NewEngine()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	event := &enrichment.EnrichedEvent{
+		EventType: "pod_spec_check",
+		Timestamp: time.Now(),
+		Kubernetes: &enrichment.K8sContext{
+			ClusterID: "c-1",
+			NodeName:  "n-1",
+			Namespace: "default",
+			PodName:   "p-1",
+			PodUID:    "uid-1",
+		},
+		Container: &enrichment.ContainerContext{
+			ContainerName:   "app",
+			ApparmorProfile: "",
+		},
+	}
+
+	violations := engine.Match(event)
+	if !hasControl(violations, "CIS_4.7.2") {
+		t.Fatalf("expected CIS_4.7.2 when apparmor profile is missing on pod_spec_check")
+	}
+
+	event.Container.ApparmorProfile = "unconfined"
+	violations = engine.Match(event)
+	if hasControl(violations, "CIS_4.7.2") {
+		t.Fatalf("did not expect CIS_4.7.2 when apparmor profile is explicitly set")
+	}
+}
+
 func TestCIS492IsolationLevelBehavior(t *testing.T) {
 	engine, err := NewEngine()
 	if err != nil {
