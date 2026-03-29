@@ -29,7 +29,7 @@ if ! command -v multipass >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! multipass info "$VM_NAME" >/dev/null 2>&1; then
+if ! multipass list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$VM_NAME"; then
   echo "VM '$VM_NAME' does not exist. Run scripts/setup-vm.sh first."
   exit 1
 fi
@@ -69,4 +69,3 @@ echo "[k8s] Cluster status:"
 multipass exec "$VM_NAME" -- bash -lc "sudo systemctl is-active k3s && sudo k3s kubectl get nodes -o wide"
 
 echo "[k8s] Kubeconfig ready at: ${KUBECONFIG_PATH}"
-
