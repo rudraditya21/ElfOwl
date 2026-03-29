@@ -6,7 +6,6 @@ package ebpf
 
 import (
 	"bytes"
-	"embed"
 	"errors"
 	"fmt"
 	"os"
@@ -724,56 +723,6 @@ func (ps *ProgramSet) Close() error {
 	}
 
 	return nil
-}
-
-// ============================================================================
-// Helper Functions (Phase 2 Implementation)
-// ============================================================================
-
-// loadBytecode extracts embedded eBPF bytecode from compiled binaries
-// Phase 2: Uses //go:embed to include .o files
-func loadBytecode(progFiles embed.FS) (map[string][]byte, error) {
-	// TODO (Phase 2): Implement bytecode loading
-	// Walk programs/bin/*.o and load each file
-	bytecode := make(map[string][]byte)
-
-	// Phase 2 pseudocode:
-	// fs.WalkDir(progFiles, "programs/bin", func(path string, d fs.DirEntry) error {
-	//     if !strings.HasSuffix(path, ".o") {
-	//         return nil
-	//     }
-	//     data, err := fs.ReadFile(progFiles, path)
-	//     bytecode[filepath.Base(path)] = data
-	//     return err
-	// })
-
-	return bytecode, nil
-}
-
-// newProgramSet creates a ProgramSet from loaded bytecode
-// Phase 2: Parses ELF sections and attaches tracepoints
-func newProgramSet(name string, bytecode []byte, logger *zap.Logger) (*ProgramSet, error) {
-	// TODO (Phase 2): Implement program loading
-	// 1. Parse ELF bytecode via cilium/ebpf spec
-	// 2. Create ebpf.Program via CollectionSpec.Progs
-	// 3. Load into kernel
-	// 4. Create Reader (PerfBufferReader or RingBufferReader)
-	// 5. Return ProgramSet
-
-	return nil, fmt.Errorf("Phase 2 implementation: load %s program", name)
-}
-
-// attachTracepoint attaches eBPF program to kernel tracepoint
-// Phase 2: Calls perf_event_open for tp_btf or raw_tracepoint
-func attachTracepoint(prog *ebpf.Program, group, name string) error {
-	// TODO (Phase 2): Implement tracepoint attachment
-	// Use golang.org/x/sys/unix for perf_event_open syscall
-	// Steps:
-	// 1. Find tracepoint ID from /sys/kernel/debug/tracing/events/{group}/{name}/id
-	// 2. Call perf_event_open with PERF_TYPE_TRACEPOINT
-	// 3. Attach program via BPF_LINK_CREATE
-
-	return fmt.Errorf("Phase 2 implementation: attach %s:%s", group, name)
 }
 
 // ============================================================================
