@@ -1,6 +1,5 @@
 // ANCHOR: CIS control rule matching engine - Dec 26, 2025
 // Matches enriched events against CIS Kubernetes v1.8 control rules
-// IMPLEMENTATION IN PROGRESS - Week 2 task
 
 package rules
 
@@ -648,9 +647,7 @@ func contains(slice []string, item string) bool {
 }
 
 // loadCISRules loads all CIS Kubernetes v1.8 control rules
-// ANCHOR: Load stub CIS rules from cis_mappings.go - Dec 26, 2025
-// Returns the 6 automated stub controls defined in CISControls variable.
-// Full implementation with 48 total automated controls planned for Week 2.
+// ANCHOR: Load CIS rules from in-repo mappings - Dec 26, 2025
 func loadCISRules() []*Rule {
 	return CISControls
 }

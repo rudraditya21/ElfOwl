@@ -1,6 +1,5 @@
 // ANCHOR: Kubernetes API client - Dec 26, 2025
 // Provides read-only K8s API access for metadata enrichment
-// IMPLEMENTATION IN PROGRESS - Week 4 task
 
 package kubernetes
 

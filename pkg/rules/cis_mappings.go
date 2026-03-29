@@ -1,13 +1,9 @@
 // ANCHOR: CIS Kubernetes v1.8 control rule definitions - Dec 26, 2025
-// Defines all 48 automated + 9 manual CIS controls
-// IMPLEMENTATION IN PROGRESS - Week 2 task
+// Defines automated runtime-detectable CIS controls.
 
 package rules
 
-// CISControls contains all 57 CIS Kubernetes v1.8 controls
-// Breakdown:
-// - 48 automated controls (detectable via eBPF + K8s API)
-// - 9 manual controls (require node/audit access)
+// CISControls contains runtime-detectable CIS Kubernetes controls.
 
 var CISControls = []*Rule{
 	// ===== AUTOMATED CONTROLS =====
@@ -750,29 +746,4 @@ var CISControls = []*Rule{
 		},
 	},
 
-	// ===== MANUAL CONTROLS (Cannot be auto-detected via eBPF) =====
-	// These require node access or audit logs:
-	// - CIS 1.1.x: API server configuration files
-	// - CIS 1.2.x: API server flags
-	// - CIS 1.3.x: Controller manager configuration
-	// - CIS 1.5.x: etcd encryption
-	// - CIS 4.2.x: Kubelet configuration
 }
-
-// ANCHOR: Week 2 Phase 1 Implementation Complete - Dec 26, 2025
-// Expanded from 6 to 48 automated CIS controls organized by category:
-// - Pod Security Context Controls (8 rules: CIS 4.2.x)
-// - Container Image & Registry Controls (6 rules: CIS 4.3.x)
-// - Resource Management Controls (5 rules: CIS 4.4.x)
-// - Network Policy Controls (5 rules: CIS 4.6.x)
-// - RBAC & Access Controls (10 rules: CIS 5.x.x)
-// - Advanced Security Context Controls (9 rules: CIS 4.7-4.9)
-// Total automated controls: 48 (out of 57 CIS Kubernetes v1.8 controls)
-
-// Week 2 remaining tasks:
-// - [ ] Implement rule loading from file (LoadRulesFromFile)
-// - [ ] Implement rule loading from ConfigMap (LoadRulesFromConfigMap)
-// - [ ] Update engine to use flexible rule loading
-// - [ ] Add field extraction for new rule conditions
-// - [ ] Add rule testing with sample events
-// - [ ] Add remediation documentation
