@@ -719,6 +719,9 @@ var CISControls = []*Rule{
 	},
 
 	// CIS 4.9.2: Container isolation enforcement
+	// ANCHOR: Isolation threshold tuning - Signal quality fix - Mar 29, 2026
+	// `isolation_level < 1` targets containers with no effective hardening signals.
+	// Level 1+ is treated as baseline hardened to reduce noisy false positives.
 	{
 		ControlID:  "CIS_4.9.2",
 		Title:      "Ensure container isolation is properly configured",
