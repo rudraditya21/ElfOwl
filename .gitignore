@@ -60,3 +60,5 @@ pkg/ebpf/programs/vmlinux.h
 
 # Temporary sync archives
 .owl-agent-src.tgz
+
+.gocache/
