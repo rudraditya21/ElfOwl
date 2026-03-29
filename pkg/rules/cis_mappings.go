@@ -702,9 +702,11 @@ var CISControls = []*Rule{
 	},
 
 	// CIS 4.9.1: Container runtime security
+	// ANCHOR: Runtime allowlist violation rule - Clarification: approved runtime set - Mar 29, 2026
+	// Triggers when runtime is outside the approved set (containerd/cri-o).
 	{
 		ControlID:  "CIS_4.9.1",
-		Title:      "Ensure container runtime is from official sources",
+		Title:      "Ensure container runtime is from approved sources",
 		Severity:   "HIGH",
 		EventTypes: []string{"pod_spec_check"},
 		Conditions: []Condition{

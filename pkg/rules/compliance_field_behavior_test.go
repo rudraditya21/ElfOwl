@@ -45,6 +45,12 @@ func TestCIS491ContainerRuntimeBehavior(t *testing.T) {
 	if !hasControl(violations, "CIS_4.9.1") {
 		t.Fatalf("expected CIS_4.9.1 when runtime is docker")
 	}
+
+	base.Container.Runtime = "unknown"
+	violations = engine.Match(base)
+	if !hasControl(violations, "CIS_4.9.1") {
+		t.Fatalf("expected CIS_4.9.1 when runtime is unknown")
+	}
 }
 
 func TestCIS431RegistryAllowlistBehavior(t *testing.T) {
