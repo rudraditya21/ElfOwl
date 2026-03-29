@@ -31,11 +31,6 @@ type Enricher struct {
 	NodeName  string
 	Logger    *zap.Logger
 
-	// ANCHOR: Container to pod mapping cache for fast lookups - Phase 2, Dec 26, 2025
-	// Caches containerID -> namespace/podname mappings to avoid repeated K8s API queries
-	containerToPodMutex sync.RWMutex
-	containerToPodCache map[string]string // containerID -> "namespace/podname"
-
 	// ANCHOR: cgroupID to containerID cache - Fix PR-23 #3 /proc race - Mar 25, 2026
 	// CgroupID is captured in kernel at event time (race-free). Used as fallback when
 	// /proc/<pid>/cgroup is unreadable (process already exited).
@@ -80,7 +75,6 @@ func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string) (*Enr
 		ClusterID:              clusterID,
 		NodeName:               nodeName,
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -573,10 +567,6 @@ func (e *Enricher) refreshCgroupPodMappings(ctx context.Context, force bool) {
 				}
 			}
 
-			e.containerToPodMutex.Lock()
-			e.containerToPodCache[containerID] = mapping
-			e.containerToPodMutex.Unlock()
-
 			e.K8sClient.GetCache().SetContainerMapping(containerID, mapping)
 			e.K8sClient.GetCache().SetCgroupMapping(cgroupID, mapping)
 		}
@@ -653,10 +643,8 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string, cgrou
 		return nil, nil
 	}
 
-	// Check local enricher cache first
-	e.containerToPodMutex.RLock()
-	cachedMapping, found := e.containerToPodCache[containerID]
-	e.containerToPodMutex.RUnlock()
+	// Use Kubernetes client cache as the single source of truth for container mappings.
+	cachedMapping, found := e.K8sClient.GetCache().GetContainerMapping(containerID)
 
 	if found {
 		// Parse cached mapping: "namespace/podname[/container]"
@@ -678,9 +666,7 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string, cgrou
 					if metadata.ContainerName != "" {
 						mapping = fmt.Sprintf("%s/%s/%s", metadata.Namespace, metadata.Name, metadata.ContainerName)
 					}
-					e.containerToPodMutex.Lock()
-					e.containerToPodCache[containerID] = mapping
-					e.containerToPodMutex.Unlock()
+					e.K8sClient.GetCache().SetContainerMapping(containerID, mapping)
 					return metadata, nil
 				}
 			}
@@ -708,9 +694,7 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string, cgrou
 		if metadata.ContainerName != "" {
 			mapping = fmt.Sprintf("%s/%s/%s", metadata.Namespace, metadata.Name, metadata.ContainerName)
 		}
-		e.containerToPodMutex.Lock()
-		e.containerToPodCache[containerID] = mapping
-		e.containerToPodMutex.Unlock()
+		e.K8sClient.GetCache().SetContainerMapping(containerID, mapping)
 
 		// Also cache cgroupID -> containerID mapping for fast fallback lookups
 		if cgroupID != 0 {

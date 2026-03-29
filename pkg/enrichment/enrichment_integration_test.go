@@ -79,7 +79,6 @@ func TestEnrichProcessEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *tes
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -131,7 +130,6 @@ func TestEnrichNetworkEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *tes
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -193,7 +191,6 @@ func TestEnrichDNSEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *testing
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -237,7 +234,6 @@ func TestEnrichFileEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *testin
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -283,7 +279,6 @@ func TestEnrichCapabilityEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -332,7 +327,6 @@ func TestAllEnrichFunctionsActuallyReturnSentinelErrorOnPodAbsent(t *testing.T) 
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
