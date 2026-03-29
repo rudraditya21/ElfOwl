@@ -400,9 +400,9 @@ func DefaultConfig() *Config {
 					BackoffMultiplier: 2.0,
 				},
 				TLS: TLSConfig{
-					Enabled:    true,
+					Enabled:    false,
 					Verify:     true,
-					CACertPath: "/etc/elf-owl/ca.crt",
+					CACertPath: "",
 				},
 			},
 			Metrics: MetricsConfig{

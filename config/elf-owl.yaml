@@ -101,9 +101,9 @@ agent:
 
     # TLS configuration
     tls:
-      enabled: true
+      enabled: false
       verify: true
-      ca_cert_path: "/etc/elf-owl/ca.crt"
+      ca_cert_path: ""
 
   # Prometheus metrics
   metrics:
