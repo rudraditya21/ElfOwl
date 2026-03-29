@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,13 +24,14 @@ import (
 
 // Client provides read-only access to Kubernetes API
 type Client struct {
-	clientset *kubernetes.Clientset
-	config    *rest.Config
-	cache     *MetadataCache
-	auditMu   sync.RWMutex
-	auditMemo auditLoggingMemo
-	rbacMu    sync.RWMutex
-	rbacMemo  apiGroupMemo
+	clientset  *kubernetes.Clientset
+	config     *rest.Config
+	cache      *MetadataCache
+	apiLimiter *rate.Limiter
+	auditMu    sync.RWMutex
+	auditMemo  auditLoggingMemo
+	rbacMu     sync.RWMutex
+	rbacMemo   apiGroupMemo
 }
 
 type auditLoggingMemo struct {
@@ -42,6 +45,11 @@ type apiGroupMemo struct {
 	checked   bool
 	checkedAt time.Time
 }
+
+const (
+	defaultK8sAPIRateLimit = 50
+	defaultK8sAPIBurst     = 100
+)
 
 // NewClient creates a new Kubernetes API client
 func NewClient(inCluster bool) (*Client, error) {
@@ -73,7 +81,42 @@ func NewClient(inCluster bool) (*Client, error) {
 		clientset: clientset,
 		config:    config,
 		cache:     NewMetadataCache(5 * 60), // 5-minute TTL in seconds
+		apiLimiter: rate.NewLimiter(
+			rate.Limit(loadK8sAPIRateLimit()),
+			loadK8sAPIBurst(),
+		),
 	}, nil
+}
+
+func loadK8sAPIRateLimit() float64 {
+	raw := strings.TrimSpace(os.Getenv("OWL_K8S_API_RATE_LIMIT"))
+	if raw == "" {
+		return defaultK8sAPIRateLimit
+	}
+	parsed, err := strconv.ParseFloat(raw, 64)
+	if err != nil || parsed <= 0 {
+		return defaultK8sAPIRateLimit
+	}
+	return parsed
+}
+
+func loadK8sAPIBurst() int {
+	raw := strings.TrimSpace(os.Getenv("OWL_K8S_API_BURST"))
+	if raw == "" {
+		return defaultK8sAPIBurst
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return defaultK8sAPIBurst
+	}
+	return parsed
+}
+
+func (c *Client) waitForAPIBudget(ctx context.Context) error {
+	if c == nil || c.apiLimiter == nil {
+		return nil
+	}
+	return c.apiLimiter.Wait(ctx)
 }
 
 // GetClientset returns the underlying Kubernetes clientset
@@ -121,6 +164,9 @@ func (c *Client) getPodMetadata(ctx context.Context, namespace, podName, contain
 	}
 
 	// Query K8s API
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before pod get: %w", err)
+	}
 	pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod %s/%s: %w", namespace, podName, err)
@@ -251,6 +297,9 @@ func (c *Client) getPodMetadata(ctx context.Context, namespace, podName, contain
 
 	var serviceAccount *corev1.ServiceAccount
 	if c.clientset != nil && serviceAccountName != "" {
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait failed before serviceaccount get: %w", err)
+		}
 		if sa, err := c.clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, serviceAccountName, metav1.GetOptions{}); err == nil {
 			serviceAccount = sa
 		}
@@ -364,27 +413,50 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 		agentNamespace = ns
 	}
 
-	// First, try querying just the agent's namespace
-	pods, err := c.clientset.CoreV1().Pods(agentNamespace).List(ctx, metav1.ListOptions{})
-	agentListErr := err
-	if err == nil {
-		// Search agent namespace first
-		for _, pod := range pods.Items {
-			matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
-			if found {
-				// Found matching pod, cache the mapping (with container identity when available)
-				mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
-				c.cache.SetContainerMapping(containerID, mapping)
-				return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
+	// Prefer a node-scoped all-namespace list to avoid sequential namespace+cluster-wide scans.
+	if nodeName := strings.TrimSpace(os.Getenv("OWL_NODE_NAME")); nodeName != "" {
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait failed before node-scoped pod list: %w", err)
+		}
+		nodePods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			FieldSelector: "spec.nodeName=" + nodeName,
+		})
+		if err == nil {
+			for _, pod := range nodePods.Items {
+				matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
+				if found {
+					mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
+					c.cache.SetContainerMapping(containerID, mapping)
+					return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
+				}
 			}
 		}
 	}
 
-	// If not found in agent namespace and there's time, try cluster-wide search
-	// But with rate limit protection: only do this if we're not hitting the cluster hard
-	// This is a fallback for cross-namespace events, which should be rare
+	// Fall back to namespace-scoped lookup.
+	var agentListErr error
+	if agentNamespace != "" {
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait failed before namespace pod list: %w", err)
+		}
+		pods, err := c.clientset.CoreV1().Pods(agentNamespace).List(ctx, metav1.ListOptions{})
+		agentListErr = err
+		if err == nil {
+			for _, pod := range pods.Items {
+				matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
+				if found {
+					mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
+					c.cache.SetContainerMapping(containerID, mapping)
+					return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
+				}
+			}
+		}
+	}
 
-	// Query all pods in all namespaces (expensive operation, done as fallback)
+	// Final fallback: cluster-wide list.
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before cluster-wide pod list: %w", err)
+	}
 	allPods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if agentListErr != nil {
@@ -393,15 +465,11 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 		return nil, fmt.Errorf("failed to list pods cluster-wide: %w", err)
 	}
 
-	// Search for matching container ID across all pods
 	for _, pod := range allPods.Items {
 		matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
 		if found {
-			// Found matching pod, cache the mapping
 			mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
 			c.cache.SetContainerMapping(containerID, mapping)
-
-			// Query full metadata and return
 			return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
 		}
 	}
@@ -487,6 +555,12 @@ func (c *Client) IsRBACAPIEnabled(ctx context.Context) bool {
 		return c.rbacMemo.enabled
 	}
 
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		if c.rbacMemo.checked {
+			return c.rbacMemo.enabled
+		}
+		return false
+	}
 	groups, err := c.clientset.Discovery().ServerGroups()
 	if err != nil {
 		if c.rbacMemo.checked {
@@ -561,6 +635,9 @@ func (c *Client) IsAuditLoggingEnabled(ctx context.Context) bool {
 }
 
 func (c *Client) detectAuditLoggingEnabled(ctx context.Context) (bool, bool) {
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return false, false
+	}
 	pods, err := c.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return false, false
@@ -621,6 +698,9 @@ func (c *Client) GetNodeMetadata(ctx context.Context, nodeName string) (*NodeMet
 	}
 
 	// Query K8s API
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before node get: %w", err)
+	}
 	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
@@ -659,6 +739,9 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 	}
 
 	// Query K8s API for ServiceAccount
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before serviceaccount metadata get: %w", err)
+	}
 	sa, err := c.clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, saName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get service account %s/%s: %w", namespace, saName, err)
@@ -679,6 +762,9 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 	// Token is typically in a secret with the same SA name
 	if len(sa.Secrets) > 0 {
 		secretName := sa.Secrets[0].Name
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return metadata, nil
+		}
 		secret, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
 		if err == nil {
 			// Token age is calculated from secret creation time
@@ -711,6 +797,9 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	totalPermissions := 0
 
 	// Check RoleBindings in the namespace
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return 0
+	}
 	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, rb := range rbs.Items {
@@ -721,12 +810,18 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 
 				switch rb.RoleRef.Kind {
 				case "Role":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
+					}
 					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
 					if err != nil {
 						continue
 					}
 					totalPermissions += countPolicyRulesPermissions(role.Rules)
 				case "ClusterRole":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
+					}
 					role, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
 					if err != nil {
 						continue
@@ -738,6 +833,9 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	}
 
 	// Check ClusterRoleBindings
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return totalPermissions
+	}
 	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, crb := range crbs.Items {
@@ -748,12 +846,18 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 
 				switch crb.RoleRef.Kind {
 				case "ClusterRole":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
+					}
 					crole, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
 					if err != nil {
 						continue
 					}
 					totalPermissions += countPolicyRulesPermissions(crole.Rules)
 				case "Role":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
+					}
 					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
 					if err != nil {
 						continue
@@ -775,6 +879,9 @@ func (c *Client) CountBoundRoles(ctx context.Context, namespace, saName string) 
 
 	refs := make(map[string]struct{})
 
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return 0
+	}
 	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, rb := range rbs.Items {
@@ -792,6 +899,9 @@ func (c *Client) CountBoundRoles(ctx context.Context, namespace, saName string) 
 		}
 	}
 
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return len(refs)
+	}
 	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, crb := range crbs.Items {
@@ -886,6 +996,9 @@ func (c *Client) GetNetworkPolicyStatus(ctx context.Context, namespace, podName 
 	}
 
 	// Query all NetworkPolicies in the namespace
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return status
+	}
 	netpols, err := c.clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil || netpols == nil {
 		// No policies found or error - assume no restriction
@@ -1030,6 +1143,9 @@ func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace 
 		return false
 	}
 
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return false
+	}
 	netpols, err := c.clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil || netpols == nil {
 		return false
@@ -1064,6 +1180,9 @@ func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace 
 // Used at enricher startup to pre-populate container ID to pod mappings.
 // Fails gracefully if K8s API is unavailable (returns empty map with error).
 func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, error) {
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return make(map[string]*PodMetadata), err
+	}
 	podList, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return make(map[string]*PodMetadata), err
