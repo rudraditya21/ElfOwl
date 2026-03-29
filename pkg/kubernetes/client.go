@@ -540,8 +540,17 @@ func (c *Client) IsAuditLoggingEnabled(ctx context.Context) bool {
 	}
 
 	enabled, ok := c.detectAuditLoggingEnabled(ctx)
-	if !ok && c.auditMemo.checked {
-		return c.auditMemo.enabled
+	if !ok {
+		if c.auditMemo.checked {
+			return c.auditMemo.enabled
+		}
+		// Managed control planes often hide kube-apiserver pods; treat unknown as non-violating.
+		c.auditMemo = auditLoggingMemo{
+			enabled:   true,
+			checked:   true,
+			checkedAt: time.Now(),
+		}
+		return true
 	}
 	c.auditMemo = auditLoggingMemo{
 		enabled:   enabled,
@@ -557,15 +566,20 @@ func (c *Client) detectAuditLoggingEnabled(ctx context.Context) (bool, bool) {
 		return false, false
 	}
 
+	sawAPIServer := false
 	for _, pod := range pods.Items {
 		if !isAPIServerPod(pod) {
 			continue
 		}
+		sawAPIServer = true
 		for _, container := range pod.Spec.Containers {
 			if hasAuditFlags(container.Command, container.Args) {
 				return true, true
 			}
 		}
+	}
+	if !sawAPIServer {
+		return false, false
 	}
 	return false, true
 }
