@@ -14,6 +14,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -27,9 +28,17 @@ type Client struct {
 	cache     *MetadataCache
 	auditMu   sync.RWMutex
 	auditMemo auditLoggingMemo
+	rbacMu    sync.RWMutex
+	rbacMemo  apiGroupMemo
 }
 
 type auditLoggingMemo struct {
+	enabled   bool
+	checked   bool
+	checkedAt time.Time
+}
+
+type apiGroupMemo struct {
 	enabled   bool
 	checked   bool
 	checkedAt time.Time
@@ -451,6 +460,60 @@ func findContainerNameForID(c *Client, pod corev1.Pod, normalizedID string) (str
 }
 
 const auditLoggingCacheTTL = 5 * time.Minute
+const rbacAPICacheTTL = 10 * time.Minute
+const wildcardVerbWeight = 100
+
+// IsRBACAPIEnabled returns whether the RBAC API group is available.
+// ANCHOR: RBAC API capability detection - Fix: RBACEnforced always true - Mar 29, 2026
+// Uses discovery groups with memoized TTL to avoid per-event API discovery calls.
+func (c *Client) IsRBACAPIEnabled(ctx context.Context) bool {
+	if c == nil || c.clientset == nil {
+		return false
+	}
+
+	c.rbacMu.RLock()
+	if c.rbacMemo.checked && time.Since(c.rbacMemo.checkedAt) < rbacAPICacheTTL {
+		enabled := c.rbacMemo.enabled
+		c.rbacMu.RUnlock()
+		return enabled
+	}
+	c.rbacMu.RUnlock()
+
+	c.rbacMu.Lock()
+	defer c.rbacMu.Unlock()
+
+	if c.rbacMemo.checked && time.Since(c.rbacMemo.checkedAt) < rbacAPICacheTTL {
+		return c.rbacMemo.enabled
+	}
+
+	groups, err := c.clientset.Discovery().ServerGroups()
+	if err != nil {
+		if c.rbacMemo.checked {
+			return c.rbacMemo.enabled
+		}
+		return false
+	}
+
+	enabled := hasAPIGroup(groups, "rbac.authorization.k8s.io")
+	c.rbacMemo = apiGroupMemo{
+		enabled:   enabled,
+		checked:   true,
+		checkedAt: time.Now(),
+	}
+	return enabled
+}
+
+func hasAPIGroup(groups *metav1.APIGroupList, target string) bool {
+	if groups == nil || target == "" {
+		return false
+	}
+	for _, group := range groups.Groups {
+		if group.Name == target {
+			return true
+		}
+	}
+	return false
+}
 
 // IsAuditLoggingEnabled returns best-effort cluster audit logging status.
 // ANCHOR: Audit logging status detection - Feature: CIS_5.5.1 inputs - Mar 29, 2026
@@ -616,47 +679,10 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 // Returns 0=restricted, 1=standard, 2=elevated, 3=admin
 func (c *Client) GetRBACLevel(ctx context.Context, namespace, saName string) int {
 	if namespace == "" || saName == "" {
-		return 1 // Default to standard if not found
+		return 1 // Default to standard when identity is unavailable
 	}
 
-	// Query all RoleBindings and ClusterRoleBindings for this service account
-	// Count permissions to determine level
-	permCount := 0
-
-	// Check RoleBindings in the namespace
-	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
-	if err == nil {
-		for _, rb := range rbs.Items {
-			for _, subject := range rb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// Found a RoleBinding - this grants permissions
-					permCount++
-				}
-			}
-		}
-	}
-
-	// Check ClusterRoleBindings (cluster-wide)
-	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
-	if err == nil {
-		for _, crb := range crbs.Items {
-			for _, subject := range crb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// ClusterRoleBindings grant elevated access
-					return 3 // Admin/cluster-wide
-				}
-			}
-		}
-	}
-
-	// Determine level based on permission count
-	if permCount == 0 {
-		return 0 // Restricted - no bindings
-	} else if permCount == 1 {
-		return 1 // Standard - single binding
-	} else {
-		return 2 // Elevated - multiple bindings
-	}
+	return permissionLevelFromCount(c.CountRBACPermissions(ctx, namespace, saName))
 }
 
 // CountRBACPermissions counts the total number of permissions granted via roles
@@ -674,15 +700,23 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	if err == nil {
 		for _, rb := range rbs.Items {
 			for _, subject := range rb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// Get the Role
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+
+				switch rb.RoleRef.Kind {
+				case "Role":
 					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
-					if err == nil {
-						// Count permissions (verbs) in the role
-						for _, rule := range role.Rules {
-							totalPermissions += len(rule.Verbs)
-						}
+					if err != nil {
+						continue
 					}
+					totalPermissions += countPolicyRulesPermissions(role.Rules)
+				case "ClusterRole":
+					role, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
+					if err != nil {
+						continue
+					}
+					totalPermissions += countPolicyRulesPermissions(role.Rules)
 				}
 			}
 		}
@@ -693,21 +727,79 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	if err == nil {
 		for _, crb := range crbs.Items {
 			for _, subject := range crb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// Get the ClusterRole
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+
+				switch crb.RoleRef.Kind {
+				case "ClusterRole":
 					crole, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
-					if err == nil {
-						// Count permissions (verbs) in the cluster role
-						for _, rule := range crole.Rules {
-							totalPermissions += len(rule.Verbs)
-						}
+					if err != nil {
+						continue
 					}
+					totalPermissions += countPolicyRulesPermissions(crole.Rules)
+				case "Role":
+					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
+					if err != nil {
+						continue
+					}
+					totalPermissions += countPolicyRulesPermissions(role.Rules)
 				}
 			}
 		}
 	}
 
 	return totalPermissions
+}
+
+func rbacSubjectMatchesServiceAccount(subject rbacv1.Subject, namespace, saName string) bool {
+	if subject.Kind != "ServiceAccount" || subject.Name != saName {
+		return false
+	}
+
+	// ClusterRoleBinding subjects may legitimately omit namespace; treat empty as match.
+	if subject.Namespace == "" {
+		return true
+	}
+	return subject.Namespace == namespace
+}
+
+func permissionLevelFromCount(permissionCount int) int {
+	switch {
+	case permissionCount <= 0:
+		return 0
+	case permissionCount <= 10:
+		return 1
+	case permissionCount <= 100:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func countPolicyRulesPermissions(rules []rbacv1.PolicyRule) int {
+	total := 0
+	for _, rule := range rules {
+		total += countPolicyRulePermissions(rule)
+	}
+	return total
+}
+
+func countPolicyRulePermissions(rule rbacv1.PolicyRule) int {
+	verbSet := make(map[string]struct{}, len(rule.Verbs))
+	for _, verb := range rule.Verbs {
+		if strings.TrimSpace(verb) == "" {
+			continue
+		}
+		verbSet[verb] = struct{}{}
+	}
+	if len(verbSet) == 0 {
+		return 0
+	}
+	if _, hasWildcard := verbSet["*"]; hasWildcard {
+		return wildcardVerbWeight
+	}
+	return len(verbSet)
 }
 
 // GetNetworkPolicyStatus checks if network policies restrict ingress/egress for a pod

@@ -840,7 +840,7 @@ func (e *Enricher) EnrichProcessEvent(
 
 			// Get RBAC privilege level (0=restricted, 1=standard, 2=elevated, 3=admin)
 			k8sCtx.RBACLevel = e.K8sClient.GetRBACLevel(ctx, podMeta.Namespace, podMeta.ServiceAccount)
-			k8sCtx.RBACEnforced = k8sCtx.RBACLevel >= 0 // Always true if we got a result
+			k8sCtx.RBACEnforced = e.K8sClient.IsRBACAPIEnabled(ctx)
 
 			// Count permission grants
 			k8sCtx.ServiceAccountPermissions = e.K8sClient.CountRBACPermissions(ctx, podMeta.Namespace, podMeta.ServiceAccount)
