@@ -7,6 +7,8 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -215,8 +217,7 @@ func NewAgent(config *Config) (*Agent, error) {
 		config.Agent.OWL.TLS.ClientKeyPath,
 	)
 	if err != nil {
-		agent.Logger.Warn("TLS config build failed, using system defaults", zap.Error(err))
-		tlsCfg = nil
+		return nil, fmt.Errorf("failed to build TLS config: %w", err)
 	}
 
 	// Initialize Owl API client
@@ -843,9 +844,13 @@ func (a *Agent) getSigningKey() string {
 		return string(data)
 	}
 
-	// Return default (insecure - for development only)
-	a.Logger.Warn("using default signing key - NOT SECURE")
-	return "ZGVmYXVsdC1zaWduaW5nLWtleS0tLW5vdC1zZWN1cmUtZm9yLWRldmVsb3BtZW50LW9ubHk="
+	// Generate an ephemeral key when no key is configured.
+	key, err := generateEphemeralKey()
+	if err != nil {
+		a.Logger.Fatal("failed to generate ephemeral signing key", zap.Error(err))
+	}
+	a.Logger.Warn("using generated ephemeral signing key; configure ELF_OWL_SIGNING_KEY or /var/run/secrets/elf-owl-signing-key for stable identity")
+	return key
 }
 
 func (a *Agent) getEncryptionKey() string {
@@ -859,13 +864,12 @@ func (a *Agent) getEncryptionKey() string {
 		return string(data)
 	}
 
-	// ANCHOR: Default development encryption key - Dec 26, 2025
-	// 32-byte key (256-bit) base64-encoded for AES-256-GCM
-	// This decodes to exactly 32 bytes (verified: len(base64.StdEncoding.DecodeString(...)) == 32)
-	// Pattern: 32 repetitions of 0x55, base64-encoded = "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU="
-	// This is intentionally insecure for development/testing only - NEVER use in production
-	a.Logger.Warn("using default encryption key - NOT SECURE - development only")
-	return "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU="
+	key, err := generateEphemeralKey()
+	if err != nil {
+		a.Logger.Fatal("failed to generate ephemeral encryption key", zap.Error(err))
+	}
+	a.Logger.Warn("using generated ephemeral encryption key; configure ELF_OWL_ENCRYPTION_KEY or /var/run/secrets/elf-owl-encryption-key for stable encryption")
+	return key
 }
 
 func (a *Agent) getJWTToken() string {
@@ -882,4 +886,12 @@ func (a *Agent) getJWTToken() string {
 	// No token found
 	a.Logger.Warn("no JWT token found - API authentication will fail")
 	return ""
+}
+
+func generateEphemeralKey() (string, error) {
+	keyBytes := make([]byte, 32)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(keyBytes), nil
 }
