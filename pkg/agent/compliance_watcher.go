@@ -233,8 +233,8 @@ func (a *Agent) buildPodSpecEventForContainer(ctx context.Context, pod *corev1.P
 		k8sCtx.RBACLevel = a.K8sClient.GetRBACLevel(ctx, pod.Namespace, serviceAccountName)
 		k8sCtx.RBACEnforced = a.K8sClient.IsRBACAPIEnabled(ctx)
 		k8sCtx.ServiceAccountPermissions = a.K8sClient.CountRBACPermissions(ctx, pod.Namespace, serviceAccountName)
-		k8sCtx.RBACPolicyDefined = k8sCtx.ServiceAccountPermissions > 0
-		k8sCtx.RolePermissionCount = k8sCtx.ServiceAccountPermissions
+		k8sCtx.RolePermissionCount = a.K8sClient.CountBoundRoles(ctx, pod.Namespace, serviceAccountName)
+		k8sCtx.RBACPolicyDefined = a.K8sClient.HasRBACPolicy(ctx, pod.Namespace, serviceAccountName)
 	}
 
 	containerCtx := &enrichment.ContainerContext{

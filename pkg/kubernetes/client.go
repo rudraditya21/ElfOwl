@@ -767,6 +767,56 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	return totalPermissions
 }
 
+// CountBoundRoles returns the number of distinct Role/ClusterRole refs bound to the service account.
+func (c *Client) CountBoundRoles(ctx context.Context, namespace, saName string) int {
+	if namespace == "" || saName == "" {
+		return 0
+	}
+
+	refs := make(map[string]struct{})
+
+	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, rb := range rbs.Items {
+			for _, subject := range rb.Subjects {
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+				if rb.RoleRef.Name == "" {
+					continue
+				}
+				refKey := rb.RoleRef.Kind + "/" + rb.RoleRef.Name
+				refs[refKey] = struct{}{}
+				break
+			}
+		}
+	}
+
+	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, crb := range crbs.Items {
+			for _, subject := range crb.Subjects {
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+				if crb.RoleRef.Name == "" {
+					continue
+				}
+				refKey := crb.RoleRef.Kind + "/" + crb.RoleRef.Name
+				refs[refKey] = struct{}{}
+				break
+			}
+		}
+	}
+
+	return len(refs)
+}
+
+// HasRBACPolicy returns whether the service account is referenced by any RBAC binding.
+func (c *Client) HasRBACPolicy(ctx context.Context, namespace, saName string) bool {
+	return c.CountBoundRoles(ctx, namespace, saName) > 0
+}
+
 func rbacSubjectMatchesServiceAccount(subject rbacv1.Subject, namespace, saName string) bool {
 	if subject.Kind != "ServiceAccount" || subject.Name != saName {
 		return false
