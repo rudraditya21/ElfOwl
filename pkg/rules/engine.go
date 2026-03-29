@@ -268,6 +268,9 @@ func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Conditi
 	case "in":
 		return valueInSlice(cond.Value, fieldValue)
 
+	case "not_in":
+		return !valueInSlice(cond.Value, fieldValue)
+
 	case "greater_than":
 		fv, fOk := toFloat(fieldValue)
 		cv, cOk := toFloat(cond.Value)

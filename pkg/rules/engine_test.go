@@ -96,10 +96,10 @@ func TestNewEngineWithConfig(t *testing.T) {
 		{
 			name: "No configuration provided (all defaults)",
 			config: &EngineConfig{
-				RuleFilePath:      "",
-				ConfigMapName:     "",
+				RuleFilePath:       "",
+				ConfigMapName:      "",
 				ConfigMapNamespace: "",
-				K8sClientset:      nil,
+				K8sClientset:       nil,
 			},
 			shouldFail:     false,
 			expectFallback: true, // Should use hardcoded rules
@@ -107,18 +107,18 @@ func TestNewEngineWithConfig(t *testing.T) {
 		{
 			name: "Non-existent file with no ConfigMap fallback",
 			config: &EngineConfig{
-				RuleFilePath:      "/tmp/non-existent-rules.yaml",
-				ConfigMapName:     "",
+				RuleFilePath:       "/tmp/non-existent-rules.yaml",
+				ConfigMapName:      "",
 				ConfigMapNamespace: "",
-				K8sClientset:      nil,
+				K8sClientset:       nil,
 			},
 			shouldFail:     false,
 			expectFallback: true, // Should fall back to hardcoded rules
 		},
 		{
-			name: "Nil config provided",
-			config: nil,
-			shouldFail: true,
+			name:          "Nil config provided",
+			config:        nil,
+			shouldFail:    true,
 			expectedError: "cannot be nil",
 		},
 	}
@@ -328,6 +328,36 @@ func TestConditionEvaluation(t *testing.T) {
 			expected: false,
 		},
 		{
+			name: "Not in operator - true match",
+			event: &enrichment.EnrichedEvent{
+				EventType: "pod_spec_check",
+				Container: &enrichment.ContainerContext{
+					Runtime: "docker",
+				},
+			},
+			condition: Condition{
+				Field:    "container.runtime",
+				Operator: "not_in",
+				Value:    []string{"containerd", "cri-o"},
+			},
+			expected: true,
+		},
+		{
+			name: "Not in operator - false match",
+			event: &enrichment.EnrichedEvent{
+				EventType: "pod_spec_check",
+				Container: &enrichment.ContainerContext{
+					Runtime: "containerd",
+				},
+			},
+			condition: Condition{
+				Field:    "container.runtime",
+				Operator: "not_in",
+				Value:    []string{"containerd", "cri-o"},
+			},
+			expected: false,
+		},
+		{
 			name: "In operator - value found",
 			event: &enrichment.EnrichedEvent{
 				EventType: "capability_usage",
@@ -482,7 +512,7 @@ func TestRuleMatching(t *testing.T) {
 		name              string
 		event             *enrichment.EnrichedEvent
 		expectViolations  bool
-		minViolationCount int // Minimum expected violations
+		minViolationCount int    // Minimum expected violations
 		expectedRuleID    string // Expected rule that triggers
 	}{
 		{
@@ -726,8 +756,8 @@ func TestMultipleConditions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		event         *enrichment.EnrichedEvent
+		name            string
+		event           *enrichment.EnrichedEvent
 		expectViolation bool
 	}{
 		{

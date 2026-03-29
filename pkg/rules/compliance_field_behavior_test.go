@@ -36,14 +36,121 @@ func TestCIS491ContainerRuntimeBehavior(t *testing.T) {
 	}
 
 	violations := engine.Match(base)
-	if !hasControl(violations, "CIS_4.9.1") {
-		t.Fatalf("expected CIS_4.9.1 when runtime is containerd")
+	if hasControl(violations, "CIS_4.9.1") {
+		t.Fatalf("did not expect CIS_4.9.1 when runtime is containerd")
 	}
 
 	base.Container.Runtime = "docker"
 	violations = engine.Match(base)
-	if hasControl(violations, "CIS_4.9.1") {
-		t.Fatalf("did not expect CIS_4.9.1 when runtime is docker")
+	if !hasControl(violations, "CIS_4.9.1") {
+		t.Fatalf("expected CIS_4.9.1 when runtime is docker")
+	}
+}
+
+func TestCIS431RegistryAllowlistBehavior(t *testing.T) {
+	engine, err := NewEngine()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	base := &enrichment.EnrichedEvent{
+		EventType: "pod_spec_check",
+		Timestamp: time.Now(),
+		Kubernetes: &enrichment.K8sContext{
+			ClusterID:     "c-1",
+			NodeName:      "n-1",
+			Namespace:     "default",
+			PodName:       "p-1",
+			PodUID:        "uid-1",
+			ImageRegistry: "ghcr.io",
+		},
+		Container: &enrichment.ContainerContext{
+			ContainerName: "app",
+			Runtime:       "containerd",
+		},
+	}
+
+	violations := engine.Match(base)
+	if hasControl(violations, "CIS_4.3.1") {
+		t.Fatalf("did not expect CIS_4.3.1 for approved registry ghcr.io")
+	}
+
+	base.Kubernetes.ImageRegistry = "unknown.registry.internal"
+	violations = engine.Match(base)
+	if !hasControl(violations, "CIS_4.3.1") {
+		t.Fatalf("expected CIS_4.3.1 for non-approved registry")
+	}
+}
+
+func TestNoDuplicateSeccompViolationsPerProcessEvent(t *testing.T) {
+	engine, err := NewEngine()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	event := &enrichment.EnrichedEvent{
+		EventType: "process_execution",
+		Timestamp: time.Now(),
+		Kubernetes: &enrichment.K8sContext{
+			ClusterID: "c-1",
+			NodeName:  "n-1",
+			Namespace: "default",
+			PodName:   "p-1",
+			PodUID:    "uid-1",
+		},
+		Container: &enrichment.ContainerContext{
+			ContainerName:   "app",
+			SeccompProfile:  "unconfined",
+			ApparmorProfile: "runtime/default",
+		},
+		Process: &enrichment.ProcessContext{
+			PID: 100,
+			UID: 1000,
+		},
+	}
+
+	violations := engine.Match(event)
+	if !hasControl(violations, "CIS_4.2.7") {
+		t.Fatalf("expected CIS_4.2.7 for process_execution seccomp unconfined")
+	}
+	if hasControl(violations, "CIS_4.7.1") {
+		t.Fatalf("did not expect CIS_4.7.1 on process_execution event")
+	}
+}
+
+func TestNoDuplicateAppArmorViolationsPerProcessEvent(t *testing.T) {
+	engine, err := NewEngine()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	event := &enrichment.EnrichedEvent{
+		EventType: "process_execution",
+		Timestamp: time.Now(),
+		Kubernetes: &enrichment.K8sContext{
+			ClusterID: "c-1",
+			NodeName:  "n-1",
+			Namespace: "default",
+			PodName:   "p-1",
+			PodUID:    "uid-1",
+		},
+		Container: &enrichment.ContainerContext{
+			ContainerName:   "app",
+			SeccompProfile:  "runtime/default",
+			ApparmorProfile: "unconfined",
+		},
+		Process: &enrichment.ProcessContext{
+			PID: 100,
+			UID: 1000,
+		},
+	}
+
+	violations := engine.Match(event)
+	if !hasControl(violations, "CIS_4.2.8") {
+		t.Fatalf("expected CIS_4.2.8 for process_execution apparmor unconfined")
+	}
+	if hasControl(violations, "CIS_4.7.2") {
+		t.Fatalf("did not expect CIS_4.7.2 on process_execution event")
 	}
 }
 

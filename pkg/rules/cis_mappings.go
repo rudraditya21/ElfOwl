@@ -58,8 +58,8 @@ var CISControls = []*Rule{
 				Field:    "capability.name",
 				Operator: "in",
 				Value: []string{
-					"NET_ADMIN", "SYS_ADMIN", "SYS_MODULE",
-					"SYS_PTRACE", "SYS_BOOT", "MAC_ADMIN",
+					"SYS_MODULE", "SYS_BOOT", "SYS_TIME",
+					"SYS_RAWIO", "SYS_PACCT",
 				},
 			},
 		},
@@ -212,8 +212,8 @@ var CISControls = []*Rule{
 				Field:    "capability.name",
 				Operator: "in",
 				Value: []string{
-					"NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE",
-					"SYS_PTRACE", "SYS_BOOT", "MAC_ADMIN", "MAC_OVERRIDE",
+					"NET_ADMIN", "NET_RAW", "SYS_ADMIN",
+					"SYS_PTRACE", "MAC_ADMIN", "MAC_OVERRIDE",
 					"DAC_OVERRIDE", "DAC_READ_SEARCH", "SETFCAP",
 				},
 			},
@@ -261,8 +261,14 @@ var CISControls = []*Rule{
 		Conditions: []Condition{
 			{
 				Field:    "kubernetes.image_registry",
-				Operator: "not_equals",
-				Value:    "docker.io",
+				Operator: "not_in",
+				Value: []string{
+					"docker.io",
+					"gcr.io",
+					"registry.k8s.io",
+					"quay.io",
+					"ghcr.io",
+				},
 			},
 		},
 	},
@@ -625,7 +631,7 @@ var CISControls = []*Rule{
 		ControlID:  "CIS_4.7.1",
 		Title:      "Ensure seccomp profiles are enforced",
 		Severity:   "MEDIUM",
-		EventTypes: []string{"process_execution"},
+		EventTypes: []string{"pod_spec_check"},
 		Conditions: []Condition{
 			{
 				Field:    "container.seccomp_profile",
@@ -640,7 +646,7 @@ var CISControls = []*Rule{
 		ControlID:  "CIS_4.7.2",
 		Title:      "Ensure AppArmor profiles are enforced",
 		Severity:   "MEDIUM",
-		EventTypes: []string{"process_execution"},
+		EventTypes: []string{"pod_spec_check"},
 		Conditions: []Condition{
 			{
 				Field:    "container.apparmor_profile",
@@ -708,8 +714,8 @@ var CISControls = []*Rule{
 		Conditions: []Condition{
 			{
 				Field:    "container.runtime",
-				Operator: "not_equals",
-				Value:    "docker",
+				Operator: "not_in",
+				Value:    []string{"containerd", "cri-o", "crio"},
 			},
 		},
 	},
