@@ -48,9 +48,10 @@ type Rule struct {
 
 // Condition is a single matching criterion
 type Condition struct {
-	Field    string
-	Operator string
-	Value    interface{}
+	Field         string
+	Operator      string
+	Value         interface{}
+	compiledRegex *regexp.Regexp
 }
 
 // Violation represents a detected CIS violation
@@ -100,6 +101,7 @@ func NewEngine(ruleFilePath ...string) (*Engine, error) {
 		Rules:  rules,
 		Logger: logger,
 	}
+	prepareRuleCaches(engine.Rules, logger)
 
 	return engine, nil
 }
@@ -196,6 +198,7 @@ func NewEngineWithConfig(config *EngineConfig) (*Engine, error) {
 		Rules:  rules,
 		Logger: logger,
 	}
+	prepareRuleCaches(engine.Rules, logger)
 
 	logger.Info("rule engine initialized", zap.String("rule_source", ruleSource))
 	return engine, nil
@@ -213,8 +216,8 @@ func (e *Engine) Match(event *enrichment.EnrichedEvent) []*Violation {
 
 		// Evaluate all conditions
 		allMatch := true
-		for _, cond := range rule.Conditions {
-			if !e.evaluateCondition(event, cond) {
+		for i := range rule.Conditions {
+			if !e.evaluateCondition(event, &rule.Conditions[i]) {
 				allMatch = false
 				break
 			}
@@ -238,7 +241,11 @@ func (e *Engine) Match(event *enrichment.EnrichedEvent) []*Violation {
 }
 
 // evaluateCondition evaluates a single condition against an event
-func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Condition) bool {
+func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond *Condition) bool {
+	if cond == nil {
+		return false
+	}
+
 	// ANCHOR: Condition evaluation for CIS rule matching - Dec 26, 2025
 	// Implements field extraction and operator-based matching
 	// Supports: equals, not_equals, contains, in, regex patterns
@@ -293,16 +300,41 @@ func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Conditi
 		if !ok {
 			return false
 		}
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			e.Logger.Warn("invalid regex pattern", zap.String("pattern", pattern), zap.Error(err))
-			return false
+		if cond.compiledRegex != nil {
+			return cond.compiledRegex.MatchString(str)
 		}
-		return re.MatchString(str)
+		re, err := regexp.Compile(pattern)
+		return err == nil && re.MatchString(str)
 
 	default:
 		e.Logger.Warn("unknown operator", zap.String("operator", cond.Operator))
 		return false
+	}
+}
+
+func prepareRuleCaches(rules []*Rule, logger *zap.Logger) {
+	for _, rule := range rules {
+		if rule == nil {
+			continue
+		}
+		for i := range rule.Conditions {
+			cond := &rule.Conditions[i]
+			if cond.Operator != "regex" {
+				continue
+			}
+			pattern, ok := cond.Value.(string)
+			if !ok {
+				continue
+			}
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				if logger != nil {
+					logger.Warn("invalid regex pattern", zap.String("pattern", pattern), zap.Error(err))
+				}
+				continue
+			}
+			cond.compiledRegex = re
+		}
 	}
 }
 

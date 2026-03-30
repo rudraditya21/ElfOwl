@@ -584,7 +584,8 @@ func TestConditionEvaluation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := engine.evaluateCondition(tt.event, tt.condition)
+			condition := tt.condition
+			result := engine.evaluateCondition(tt.event, &condition)
 			if result != tt.expected {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
@@ -719,6 +720,47 @@ func TestRuleMatching(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPrepareRuleCachesCompilesRegex(t *testing.T) {
+	logger := zap.NewNop()
+	rules := []*Rule{
+		{
+			ControlID:  "TEST_REGEX_VALID",
+			Title:      "valid regex",
+			Severity:   "LOW",
+			EventTypes: []string{"file_access"},
+			Conditions: []Condition{
+				{
+					Field:    "file.path",
+					Operator: "regex",
+					Value:    "^/etc/.*$",
+				},
+			},
+		},
+		{
+			ControlID:  "TEST_REGEX_INVALID",
+			Title:      "invalid regex",
+			Severity:   "LOW",
+			EventTypes: []string{"file_access"},
+			Conditions: []Condition{
+				{
+					Field:    "file.path",
+					Operator: "regex",
+					Value:    "[invalid",
+				},
+			},
+		},
+	}
+
+	prepareRuleCaches(rules, logger)
+
+	if rules[0].Conditions[0].compiledRegex == nil {
+		t.Fatalf("expected compiled regex cache for valid pattern")
+	}
+	if rules[1].Conditions[0].compiledRegex != nil {
+		t.Fatalf("did not expect compiled regex cache for invalid pattern")
 	}
 }
 
@@ -925,7 +967,8 @@ func BenchmarkConditionEvaluation(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		engine.evaluateCondition(event, condition)
+		cond := condition
+		engine.evaluateCondition(event, &cond)
 	}
 }
 
