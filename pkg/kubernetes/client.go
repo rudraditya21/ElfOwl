@@ -617,7 +617,7 @@ func hasAPIGroup(groups *metav1.APIGroupList, target string) bool {
 // ANCHOR: Audit logging status detection - Feature: CIS_5.5.1 inputs - Mar 29, 2026
 // Uses kube-apiserver pod command/args flags with short TTL caching.
 func (c *Client) IsAuditLoggingEnabled(ctx context.Context) bool {
-	if c == nil || c.clientset == nil {
+	if c == nil || (c.clientset == nil && c.listKubeSystemPods == nil) {
 		return false
 	}
 
@@ -641,13 +641,13 @@ func (c *Client) IsAuditLoggingEnabled(ctx context.Context) bool {
 		if c.auditMemo.checked {
 			return c.auditMemo.enabled
 		}
-		// Managed control planes often hide kube-apiserver pods; treat unknown as non-violating.
+		// Unknown audit status should not auto-pass CIS 5.5.1 checks.
 		c.auditMemo = auditLoggingMemo{
-			enabled:   true,
+			enabled:   false,
 			checked:   true,
 			checkedAt: time.Now(),
 		}
-		return true
+		return false
 	}
 	c.auditMemo = auditLoggingMemo{
 		enabled:   enabled,
@@ -661,7 +661,7 @@ func (c *Client) detectAuditLoggingEnabled(ctx context.Context) (bool, bool) {
 	if err := c.waitForAPIBudget(ctx); err != nil {
 		return false, false
 	}
-	pods, err := c.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
+	pods, err := c.kubeSystemPods(ctx)
 	if err != nil {
 		return false, false
 	}
@@ -682,6 +682,19 @@ func (c *Client) detectAuditLoggingEnabled(ctx context.Context) (bool, bool) {
 		return false, false
 	}
 	return false, true
+}
+
+func (c *Client) kubeSystemPods(ctx context.Context) (*corev1.PodList, error) {
+	if c == nil {
+		return nil, fmt.Errorf("kubernetes client is nil")
+	}
+	if c.listKubeSystemPods != nil {
+		return c.listKubeSystemPods(ctx)
+	}
+	if c.clientset == nil {
+		return nil, fmt.Errorf("kubernetes clientset not configured")
+	}
+	return c.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
 }
 
 func isAPIServerPod(pod corev1.Pod) bool {
