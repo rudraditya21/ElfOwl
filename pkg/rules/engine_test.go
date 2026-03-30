@@ -373,6 +373,21 @@ func TestConditionEvaluation(t *testing.T) {
 			expected: false,
 		},
 		{
+			name: "Not in operator - malformed rule value fails closed",
+			event: &enrichment.EnrichedEvent{
+				EventType: "pod_spec_check",
+				Container: &enrichment.ContainerContext{
+					Runtime: "docker",
+				},
+			},
+			condition: Condition{
+				Field:    "container.runtime",
+				Operator: "not_in",
+				Value:    "containerd",
+			},
+			expected: false,
+		},
+		{
 			name: "In operator - value found",
 			event: &enrichment.EnrichedEvent{
 				EventType: "capability_usage",
@@ -399,6 +414,21 @@ func TestConditionEvaluation(t *testing.T) {
 				Field:    "capability.name",
 				Operator: "in",
 				Value:    []string{"NET_ADMIN", "SYS_ADMIN"},
+			},
+			expected: false,
+		},
+		{
+			name: "In operator - malformed rule value",
+			event: &enrichment.EnrichedEvent{
+				EventType: "capability_usage",
+				Capability: &enrichment.CapabilityContext{
+					Name: "NET_ADMIN",
+				},
+			},
+			condition: Condition{
+				Field:    "capability.name",
+				Operator: "in",
+				Value:    "NET_ADMIN",
 			},
 			expected: false,
 		},

@@ -267,10 +267,12 @@ func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Conditi
 		return false
 
 	case "in":
-		return valueInSlice(cond.Value, fieldValue)
+		matched, valid := valueInSlice(cond.Value, fieldValue)
+		return valid && matched
 
 	case "not_in":
-		return !valueInSlice(cond.Value, fieldValue)
+		matched, valid := valueInSlice(cond.Value, fieldValue)
+		return valid && !matched
 
 	case "greater_than":
 		fv, fOk := toFloat(fieldValue)
@@ -559,19 +561,23 @@ func (e *Engine) extractField(event *enrichment.EnrichedEvent, fieldPath string)
 }
 
 // valueInSlice checks if fieldValue is contained within slice-like condValue
-func valueInSlice(condValue interface{}, fieldValue interface{}) bool {
+func valueInSlice(condValue interface{}, fieldValue interface{}) (bool, bool) {
+	if condValue == nil {
+		return false, false
+	}
+
 	val := reflect.ValueOf(condValue)
 	if val.Kind() != reflect.Slice && val.Kind() != reflect.Array {
-		return false
+		return false, false
 	}
 
 	for i := 0; i < val.Len(); i++ {
 		if normalizedEqual(val.Index(i).Interface(), fieldValue) {
-			return true
+			return true, true
 		}
 	}
 
-	return false
+	return false, true
 }
 
 func normalizedEqual(lhs, rhs interface{}) bool {
