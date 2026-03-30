@@ -28,13 +28,14 @@ Linux-only testing helpers using Multipass.
 - `stop-agent.sh`: stop running agent process.
 - `generate-events.sh`: trigger concrete process/network/dns/file/capability activity in VM for live log validation.
 - `check-event-values.sh`: print per-event counts and latest event lines with captured values from agent log.
-- `test-live-events.sh`: one-shot live test (`setup-k8s` optional, restart agent, generate events, show state/summary/value samples).
+- `test-live-events.sh`: one-shot live test (`setup-k8s` optional, restart agent, generate events, show state/summary/value samples); supports `--without-k8s` for monitor-only mode.
 - `check-state.sh`: process state + health + metrics + recent errors.
 - `check-logs.sh`: filtered logs by category.
 - `event-summary.sh`: count event/violation log lines (use debug level for event-sent counts).
 
 ## Important Notes
 
-- The agent requires Kubernetes client access at startup. Use `scripts/setup-k8s-vm.sh` and run `start-agent.sh --kubeconfig /home/ubuntu/.kube/config`.
+- Kubernetes mode: use `scripts/setup-k8s-vm.sh` and run `start-agent.sh --kubeconfig /home/ubuntu/.kube/config`.
+- No-K8s mode: run `start-agent.sh --no-k8s` (disables Kubernetes client and pod metadata enrichment).
 - `test-events.sh --kernel` is the primary automated eBPF verification path.
 - `test-live-events.sh` is the quickest way to validate live event capture and inspect actual values in logs.

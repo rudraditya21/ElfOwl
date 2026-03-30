@@ -250,6 +250,14 @@ func (c *Config) applyEnvironmentOverrides() {
 			c.Agent.Enrichment.KubernetesOnly = parsed
 		}
 	}
+
+	// ANCHOR: kubernetes_metadata env override - Feature: no-k8s runtime mode - Mar 28, 2026
+	// Allows scripts/operators to run monitors without requiring a Kubernetes client.
+	if v := os.Getenv("OWL_KUBERNETES_METADATA"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			c.Agent.Enrichment.KubernetesMetadata = parsed
+		}
+	}
 }
 
 // Validate validates the configuration
@@ -301,7 +309,7 @@ func DefaultConfig() *Config {
 			// ANCHOR: eBPF Configuration Defaults - Phase 3: Migration Complete - Dec 27, 2025
 			// Now enabled by default with all monitors active (goBPF has been completely removed)
 			EBPF: EBPFConfig{
-				Enabled: true,
+				Enabled:       true,
 				KernelBTFPath: "",
 				Process: EBPFMonitorConfig{
 					Enabled:    true,
@@ -392,9 +400,9 @@ func DefaultConfig() *Config {
 					BackoffMultiplier: 2.0,
 				},
 				TLS: TLSConfig{
-					Enabled:    true,
+					Enabled:    false,
 					Verify:     true,
-					CACertPath: "/etc/elf-owl/ca.crt",
+					CACertPath: "",
 				},
 			},
 			Metrics: MetricsConfig{

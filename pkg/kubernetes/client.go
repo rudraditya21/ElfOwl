@@ -1,6 +1,5 @@
 // ANCHOR: Kubernetes API client - Dec 26, 2025
 // Provides read-only K8s API access for metadata enrichment
-// IMPLEMENTATION IN PROGRESS - Week 4 task
 
 package kubernetes
 
@@ -9,9 +8,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"golang.org/x/time/rate"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -20,10 +24,32 @@ import (
 
 // Client provides read-only access to Kubernetes API
 type Client struct {
-	clientset *kubernetes.Clientset
-	config    *rest.Config
-	cache     *MetadataCache
+	clientset  *kubernetes.Clientset
+	config     *rest.Config
+	cache      *MetadataCache
+	apiLimiter *rate.Limiter
+	auditMu    sync.RWMutex
+	auditMemo  auditLoggingMemo
+	rbacMu     sync.RWMutex
+	rbacMemo   apiGroupMemo
 }
+
+type auditLoggingMemo struct {
+	enabled   bool
+	checked   bool
+	checkedAt time.Time
+}
+
+type apiGroupMemo struct {
+	enabled   bool
+	checked   bool
+	checkedAt time.Time
+}
+
+const (
+	defaultK8sAPIRateLimit = 50
+	defaultK8sAPIBurst     = 100
+)
 
 // NewClient creates a new Kubernetes API client
 func NewClient(inCluster bool) (*Client, error) {
@@ -55,7 +81,42 @@ func NewClient(inCluster bool) (*Client, error) {
 		clientset: clientset,
 		config:    config,
 		cache:     NewMetadataCache(5 * 60), // 5-minute TTL in seconds
+		apiLimiter: rate.NewLimiter(
+			rate.Limit(loadK8sAPIRateLimit()),
+			loadK8sAPIBurst(),
+		),
 	}, nil
+}
+
+func loadK8sAPIRateLimit() float64 {
+	raw := strings.TrimSpace(os.Getenv("OWL_K8S_API_RATE_LIMIT"))
+	if raw == "" {
+		return defaultK8sAPIRateLimit
+	}
+	parsed, err := strconv.ParseFloat(raw, 64)
+	if err != nil || parsed <= 0 {
+		return defaultK8sAPIRateLimit
+	}
+	return parsed
+}
+
+func loadK8sAPIBurst() int {
+	raw := strings.TrimSpace(os.Getenv("OWL_K8S_API_BURST"))
+	if raw == "" {
+		return defaultK8sAPIBurst
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil || parsed <= 0 {
+		return defaultK8sAPIBurst
+	}
+	return parsed
+}
+
+func (c *Client) waitForAPIBudget(ctx context.Context) error {
+	if c == nil || c.apiLimiter == nil {
+		return nil
+	}
+	return c.apiLimiter.Wait(ctx)
 }
 
 // GetClientset returns the underlying Kubernetes clientset
@@ -77,28 +138,67 @@ func (c *Client) GetCache() *MetadataCache {
 // ANCHOR: Pod metadata query from K8s API - Phase 2.2, Dec 26, 2025
 // Retrieves pod name, namespace, UID, service account, image, and labels
 func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) (*PodMetadata, error) {
+	return c.getPodMetadata(ctx, namespace, podName, "")
+}
+
+// GetPodMetadataForContainer retrieves pod metadata using a specific container identity.
+// ANCHOR: Container-specific metadata extraction - Fix: multi-container context bleed - Mar 29, 2026
+// Uses the provided container name to extract security/resource/runtime fields from the
+// correct container instead of always using pod.Spec.Containers[0].
+func (c *Client) GetPodMetadataForContainer(ctx context.Context, namespace, podName, containerName string) (*PodMetadata, error) {
+	return c.getPodMetadata(ctx, namespace, podName, containerName)
+}
+
+func (c *Client) getPodMetadata(ctx context.Context, namespace, podName, containerName string) (*PodMetadata, error) {
 	if namespace == "" || podName == "" {
 		return nil, fmt.Errorf("namespace and pod name required")
 	}
 
 	// Check cache first
-	if cached, found := c.cache.GetPod(namespace, podName); found {
+	cacheKey := podName
+	if containerName != "" {
+		cacheKey = podName + "#" + containerName
+	}
+	if cached, found := c.cache.GetPod(namespace, cacheKey); found {
 		return cached, nil
 	}
 
 	// Query K8s API
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before pod get: %w", err)
+	}
 	pod, err := c.clientset.CoreV1().Pods(namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod %s/%s: %w", namespace, podName, err)
 	}
 
-	// Extract metadata from pod spec
+	// Select container-specific fields from the matched container when available.
+	selectedContainer := corev1.Container{}
+	selectedContainerName := containerName
+	hasSelectedContainer := false
+	if containerName != "" {
+		for _, container := range pod.Spec.Containers {
+			if container.Name == containerName {
+				selectedContainer = container
+				selectedContainerName = container.Name
+				hasSelectedContainer = true
+				break
+			}
+		}
+	}
+	if !hasSelectedContainer && len(pod.Spec.Containers) > 0 {
+		selectedContainer = pod.Spec.Containers[0]
+		selectedContainerName = selectedContainer.Name
+		hasSelectedContainer = true
+	}
+
+	// Extract metadata from selected pod container.
 	image := ""
 	imagePullPolicy := "IfNotPresent"
-	if len(pod.Spec.Containers) > 0 {
-		image = pod.Spec.Containers[0].Image
-		if pod.Spec.Containers[0].ImagePullPolicy != "" {
-			imagePullPolicy = string(pod.Spec.Containers[0].ImagePullPolicy)
+	if hasSelectedContainer {
+		image = selectedContainer.Image
+		if selectedContainer.ImagePullPolicy != "" {
+			imagePullPolicy = string(selectedContainer.ImagePullPolicy)
 		}
 	}
 
@@ -132,27 +232,18 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 		}
 	}
 
-	containerName := ""
-
 	// AppArmor profile from pod annotations
 	// ANCHOR: Extract AppArmor profile with container name in annotation key - Phase 2.2 fix, Dec 26, 2025
 	// K8s annotation key includes container name suffix, e.g. container.apparmor.security.beta.kubernetes.io/{container_name}
-	if pod.Annotations != nil && len(pod.Spec.Containers) > 0 {
-		containerName = pod.Spec.Containers[0].Name
-		apparmorProfile = pod.Annotations["container.apparmor.security.beta.kubernetes.io/"+containerName]
+	if pod.Annotations != nil && selectedContainerName != "" {
+		apparmorProfile = pod.Annotations["container.apparmor.security.beta.kubernetes.io/"+selectedContainerName]
 	}
 
-	// Container-level security context (from first container)
+	// Container-level security context (from selected container)
 	// ANCHOR: Extract container-level RunAsNonRoot to override pod-level setting - Phase 2.2 fix, Dec 26, 2025
 	// Container-level security context takes precedence over pod-level for runAsNonRoot
-	primaryContainer := corev1.Container{}
-	hasContainer := false
-
-	if len(pod.Spec.Containers) > 0 {
-		container := pod.Spec.Containers[0]
-		primaryContainer = container
-		hasContainer = true
-		containerName = container.Name
+	if hasSelectedContainer {
+		container := selectedContainer
 		if container.SecurityContext != nil {
 			if container.SecurityContext.AllowPrivilegeEscalation != nil {
 				allowPrivilegeEscalation = *container.SecurityContext.AllowPrivilegeEscalation
@@ -206,22 +297,42 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 
 	var serviceAccount *corev1.ServiceAccount
 	if c.clientset != nil && serviceAccountName != "" {
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait failed before serviceaccount get: %w", err)
+		}
 		if sa, err := c.clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, serviceAccountName, metav1.GetOptions{}); err == nil {
 			serviceAccount = sa
 		}
 	}
 
-	imageScanStatus := ImageScanStatusFromPod(pod, containerName)
+	imageScanStatus := ImageScanStatusFromPod(pod, selectedContainerName)
 	imageSigned := false
-	if signed, ok := ImageSignedFromPod(pod, containerName); ok {
+	if signed, ok := ImageSignedFromPod(pod, selectedContainerName); ok {
 		imageSigned = signed
 	}
-	imageRegistryAuth := ImageRegistryAuthFromPod(pod, containerName, serviceAccount)
+	imageRegistryAuth := ImageRegistryAuthFromPod(pod, selectedContainerName, serviceAccount)
+	runtime := ContainerRuntimeFromPod(pod, selectedContainerName)
+	tokenTTL := ServiceAccountTokenTTLFromPod(pod)
+	isolationLevel := 0
 	volumeType := ""
-	if hasContainer {
-		volumeType = VolumeTypeForContainer(pod, primaryContainer)
+	if hasSelectedContainer {
+		volumeType = VolumeTypeForContainer(pod, selectedContainer)
+		isolationLevel = IsolationLevelForContainer(pod, selectedContainer)
 	}
 	kernelHardening := KernelHardeningFromPod(pod)
+	auditLoggingEnabled, hasAuditOverride := AuditLoggingEnabledFromPod(pod)
+	if !hasAuditOverride {
+		auditLoggingEnabled = c.IsAuditLoggingEnabled(ctx)
+	}
+	var ownerRef *OwnerReference
+	if len(pod.OwnerReferences) > 0 {
+		owner := pod.OwnerReferences[0]
+		ownerRef = &OwnerReference{
+			Kind: owner.Kind,
+			Name: owner.Name,
+			UID:  string(owner.UID),
+		}
+	}
 
 	// Create PodMetadata with extracted security context
 	metadata := &PodMetadata{
@@ -233,8 +344,8 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 		ImageRegistry:            "", // Will be parsed by enricher
 		ImageTag:                 "", // Will be parsed by enricher
 		Labels:                   pod.Labels,
-		OwnerRef:                 nil, // TODO: Phase 2.3 - extract owner references from pod
-		ContainerName:            containerName,
+		OwnerRef:                 ownerRef,
+		ContainerName:            selectedContainerName,
 		RunAsUser:                runAsUser,
 		RunAsNonRoot:             runAsNonRoot,
 		FSGroup:                  fsGroup,
@@ -255,16 +366,20 @@ func (c *Client) GetPodMetadata(ctx context.Context, namespace, podName string) 
 		ImagePullPolicy:          imagePullPolicy,
 		// ANCHOR: Compliance signal fields from pod spec - Feature: image/volume/kernel signals - Mar 22, 2026
 		// Populate CIS fields from annotations, imagePullSecrets, volumes, and sysctls.
-		ImageScanStatus:   imageScanStatus,
-		ImageRegistryAuth: imageRegistryAuth,
-		ImageSigned:       imageSigned,
-		StorageRequest:    storageRequest,
-		VolumeType:        volumeType,
-		KernelHardening:   kernelHardening,
+		ImageScanStatus:               imageScanStatus,
+		ImageRegistryAuth:             imageRegistryAuth,
+		ImageSigned:                   imageSigned,
+		StorageRequest:                storageRequest,
+		VolumeType:                    volumeType,
+		Runtime:                       runtime,
+		ServiceAccountTokenTTLSeconds: tokenTTL,
+		IsolationLevel:                isolationLevel,
+		KernelHardening:               kernelHardening,
+		AuditLoggingEnabled:           auditLoggingEnabled,
 	}
 
 	// Store in cache
-	c.cache.SetPod(namespace, podName, metadata)
+	c.cache.SetPod(namespace, cacheKey, metadata)
 
 	return metadata, nil
 }
@@ -279,9 +394,9 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 
 	// Check mapping cache first - avoid K8s API query if we have cached mapping
 	if mapping, found := c.cache.GetContainerMapping(containerID); found {
-		parts := strings.Split(mapping, "/")
-		if len(parts) == 2 {
-			return c.GetPodMetadata(ctx, parts[0], parts[1])
+		namespace, podName, containerName, ok := parseNamespacedPodContainerMapping(mapping)
+		if ok {
+			return c.GetPodMetadataForContainer(ctx, namespace, podName, containerName)
 		}
 	}
 
@@ -298,28 +413,50 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 		agentNamespace = ns
 	}
 
-	// First, try querying just the agent's namespace
-	pods, err := c.clientset.CoreV1().Pods(agentNamespace).List(ctx, metav1.ListOptions{})
-	agentListErr := err
-	if err == nil {
-		// Search agent namespace first
-		for _, pod := range pods.Items {
-			for _, cs := range pod.Status.ContainerStatuses {
-				if c.normalizeContainerID(cs.ContainerID) == normalizedID {
-					// Found matching pod, cache the mapping
-					mapping := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+	// Prefer a node-scoped all-namespace list to avoid sequential namespace+cluster-wide scans.
+	if nodeName := strings.TrimSpace(os.Getenv("OWL_NODE_NAME")); nodeName != "" {
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait failed before node-scoped pod list: %w", err)
+		}
+		nodePods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			FieldSelector: "spec.nodeName=" + nodeName,
+		})
+		if err == nil {
+			for _, pod := range nodePods.Items {
+				matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
+				if found {
+					mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
 					c.cache.SetContainerMapping(containerID, mapping)
-					return c.GetPodMetadata(ctx, pod.Namespace, pod.Name)
+					return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
 				}
 			}
 		}
 	}
 
-	// If not found in agent namespace and there's time, try cluster-wide search
-	// But with rate limit protection: only do this if we're not hitting the cluster hard
-	// This is a fallback for cross-namespace events, which should be rare
+	// Fall back to namespace-scoped lookup.
+	var agentListErr error
+	if agentNamespace != "" {
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return nil, fmt.Errorf("rate limiter wait failed before namespace pod list: %w", err)
+		}
+		pods, err := c.clientset.CoreV1().Pods(agentNamespace).List(ctx, metav1.ListOptions{})
+		agentListErr = err
+		if err == nil {
+			for _, pod := range pods.Items {
+				matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
+				if found {
+					mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
+					c.cache.SetContainerMapping(containerID, mapping)
+					return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
+				}
+			}
+		}
+	}
 
-	// Query all pods in all namespaces (expensive operation, done as fallback)
+	// Final fallback: cluster-wide list.
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before cluster-wide pod list: %w", err)
+	}
 	allPods, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		if agentListErr != nil {
@@ -328,17 +465,12 @@ func (c *Client) GetPodByContainerID(ctx context.Context, containerID string) (*
 		return nil, fmt.Errorf("failed to list pods cluster-wide: %w", err)
 	}
 
-	// Search for matching container ID across all pods
 	for _, pod := range allPods.Items {
-		for _, cs := range pod.Status.ContainerStatuses {
-			if c.normalizeContainerID(cs.ContainerID) == normalizedID {
-				// Found matching pod, cache the mapping
-				mapping := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
-				c.cache.SetContainerMapping(containerID, mapping)
-
-				// Query full metadata and return
-				return c.GetPodMetadata(ctx, pod.Namespace, pod.Name)
-			}
+		matchedContainer, found := findContainerNameForID(c, pod, normalizedID)
+		if found {
+			mapping := formatNamespacedPodContainerMapping(pod.Namespace, pod.Name, matchedContainer)
+			c.cache.SetContainerMapping(containerID, mapping)
+			return c.GetPodMetadataForContainer(ctx, pod.Namespace, pod.Name, matchedContainer)
 		}
 	}
 
@@ -358,6 +490,200 @@ func (c *Client) normalizeContainerID(containerID string) string {
 	return containerID
 }
 
+func formatNamespacedPodContainerMapping(namespace, podName, containerName string) string {
+	if containerName == "" {
+		return fmt.Sprintf("%s/%s", namespace, podName)
+	}
+	return fmt.Sprintf("%s/%s/%s", namespace, podName, containerName)
+}
+
+func parseNamespacedPodContainerMapping(mapping string) (namespace, podName, containerName string, ok bool) {
+	parts := strings.SplitN(mapping, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", "", false
+	}
+	container := ""
+	if len(parts) == 3 {
+		container = parts[2]
+	}
+	return parts[0], parts[1], container, true
+}
+
+func findContainerNameForID(c *Client, pod corev1.Pod, normalizedID string) (string, bool) {
+	for _, status := range pod.Status.ContainerStatuses {
+		if c.normalizeContainerID(status.ContainerID) == normalizedID {
+			return status.Name, true
+		}
+	}
+	for _, status := range pod.Status.InitContainerStatuses {
+		if c.normalizeContainerID(status.ContainerID) == normalizedID {
+			return status.Name, true
+		}
+	}
+	for _, status := range pod.Status.EphemeralContainerStatuses {
+		if c.normalizeContainerID(status.ContainerID) == normalizedID {
+			return status.Name, true
+		}
+	}
+	return "", false
+}
+
+const auditLoggingCacheTTL = 5 * time.Minute
+const rbacAPICacheTTL = 10 * time.Minute
+const wildcardVerbWeight = 100
+
+// IsRBACAPIEnabled returns whether the RBAC API group is available.
+// ANCHOR: RBAC API capability detection - Fix: RBACEnforced always true - Mar 29, 2026
+// Uses discovery groups with memoized TTL to avoid per-event API discovery calls.
+func (c *Client) IsRBACAPIEnabled(ctx context.Context) bool {
+	if c == nil || c.clientset == nil {
+		return false
+	}
+
+	c.rbacMu.RLock()
+	if c.rbacMemo.checked && time.Since(c.rbacMemo.checkedAt) < rbacAPICacheTTL {
+		enabled := c.rbacMemo.enabled
+		c.rbacMu.RUnlock()
+		return enabled
+	}
+	c.rbacMu.RUnlock()
+
+	c.rbacMu.Lock()
+	defer c.rbacMu.Unlock()
+
+	if c.rbacMemo.checked && time.Since(c.rbacMemo.checkedAt) < rbacAPICacheTTL {
+		return c.rbacMemo.enabled
+	}
+
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		if c.rbacMemo.checked {
+			return c.rbacMemo.enabled
+		}
+		return false
+	}
+	groups, err := c.clientset.Discovery().ServerGroups()
+	if err != nil {
+		if c.rbacMemo.checked {
+			return c.rbacMemo.enabled
+		}
+		return false
+	}
+
+	enabled := hasAPIGroup(groups, "rbac.authorization.k8s.io")
+	c.rbacMemo = apiGroupMemo{
+		enabled:   enabled,
+		checked:   true,
+		checkedAt: time.Now(),
+	}
+	return enabled
+}
+
+func hasAPIGroup(groups *metav1.APIGroupList, target string) bool {
+	if groups == nil || target == "" {
+		return false
+	}
+	for _, group := range groups.Groups {
+		if group.Name == target {
+			return true
+		}
+	}
+	return false
+}
+
+// IsAuditLoggingEnabled returns best-effort cluster audit logging status.
+// ANCHOR: Audit logging status detection - Feature: CIS_5.5.1 inputs - Mar 29, 2026
+// Uses kube-apiserver pod command/args flags with short TTL caching.
+func (c *Client) IsAuditLoggingEnabled(ctx context.Context) bool {
+	if c == nil || c.clientset == nil {
+		return false
+	}
+
+	c.auditMu.RLock()
+	if c.auditMemo.checked && time.Since(c.auditMemo.checkedAt) < auditLoggingCacheTTL {
+		enabled := c.auditMemo.enabled
+		c.auditMu.RUnlock()
+		return enabled
+	}
+	c.auditMu.RUnlock()
+
+	c.auditMu.Lock()
+	defer c.auditMu.Unlock()
+
+	if c.auditMemo.checked && time.Since(c.auditMemo.checkedAt) < auditLoggingCacheTTL {
+		return c.auditMemo.enabled
+	}
+
+	enabled, ok := c.detectAuditLoggingEnabled(ctx)
+	if !ok {
+		if c.auditMemo.checked {
+			return c.auditMemo.enabled
+		}
+		// Managed control planes often hide kube-apiserver pods; treat unknown as non-violating.
+		c.auditMemo = auditLoggingMemo{
+			enabled:   true,
+			checked:   true,
+			checkedAt: time.Now(),
+		}
+		return true
+	}
+	c.auditMemo = auditLoggingMemo{
+		enabled:   enabled,
+		checked:   true,
+		checkedAt: time.Now(),
+	}
+	return enabled
+}
+
+func (c *Client) detectAuditLoggingEnabled(ctx context.Context) (bool, bool) {
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return false, false
+	}
+	pods, err := c.clientset.CoreV1().Pods("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, false
+	}
+
+	sawAPIServer := false
+	for _, pod := range pods.Items {
+		if !isAPIServerPod(pod) {
+			continue
+		}
+		sawAPIServer = true
+		for _, container := range pod.Spec.Containers {
+			if hasAuditFlags(container.Command, container.Args) {
+				return true, true
+			}
+		}
+	}
+	if !sawAPIServer {
+		return false, false
+	}
+	return false, true
+}
+
+func isAPIServerPod(pod corev1.Pod) bool {
+	if strings.Contains(pod.Name, "kube-apiserver") {
+		return true
+	}
+	if pod.Labels == nil {
+		return false
+	}
+	if pod.Labels["component"] == "kube-apiserver" {
+		return true
+	}
+	if pod.Labels["k8s-app"] == "kube-apiserver" {
+		return true
+	}
+	return false
+}
+
+func hasAuditFlags(command, args []string) bool {
+	joined := strings.Join(append(append([]string{}, command...), args...), " ")
+	return strings.Contains(joined, "--audit-log-path") ||
+		strings.Contains(joined, "--audit-policy-file") ||
+		strings.Contains(joined, "--audit-webhook-config-file")
+}
+
 // GetNodeMetadata retrieves node metadata
 // ANCHOR: Node metadata query from K8s API - Phase 2.2, Dec 26, 2025
 // Retrieves node name, labels, taints, and resource capacity
@@ -372,6 +698,9 @@ func (c *Client) GetNodeMetadata(ctx context.Context, nodeName string) (*NodeMet
 	}
 
 	// Query K8s API
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before node get: %w", err)
+	}
 	node, err := c.clientset.CoreV1().Nodes().Get(ctx, nodeName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node %s: %w", nodeName, err)
@@ -410,6 +739,9 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 	}
 
 	// Query K8s API for ServiceAccount
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return nil, fmt.Errorf("rate limiter wait failed before serviceaccount metadata get: %w", err)
+	}
 	sa, err := c.clientset.CoreV1().ServiceAccounts(namespace).Get(ctx, saName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get service account %s/%s: %w", namespace, saName, err)
@@ -430,6 +762,9 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 	// Token is typically in a secret with the same SA name
 	if len(sa.Secrets) > 0 {
 		secretName := sa.Secrets[0].Name
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return metadata, nil
+		}
 		secret, err := c.clientset.CoreV1().Secrets(namespace).Get(ctx, secretName, metav1.GetOptions{})
 		if err == nil {
 			// Token age is calculated from secret creation time
@@ -445,47 +780,10 @@ func (c *Client) GetServiceAccountMetadata(ctx context.Context, namespace, saNam
 // Returns 0=restricted, 1=standard, 2=elevated, 3=admin
 func (c *Client) GetRBACLevel(ctx context.Context, namespace, saName string) int {
 	if namespace == "" || saName == "" {
-		return 1 // Default to standard if not found
+		return 1 // Default to standard when identity is unavailable
 	}
 
-	// Query all RoleBindings and ClusterRoleBindings for this service account
-	// Count permissions to determine level
-	permCount := 0
-
-	// Check RoleBindings in the namespace
-	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
-	if err == nil {
-		for _, rb := range rbs.Items {
-			for _, subject := range rb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// Found a RoleBinding - this grants permissions
-					permCount++
-				}
-			}
-		}
-	}
-
-	// Check ClusterRoleBindings (cluster-wide)
-	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
-	if err == nil {
-		for _, crb := range crbs.Items {
-			for _, subject := range crb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// ClusterRoleBindings grant elevated access
-					return 3 // Admin/cluster-wide
-				}
-			}
-		}
-	}
-
-	// Determine level based on permission count
-	if permCount == 0 {
-		return 0 // Restricted - no bindings
-	} else if permCount == 1 {
-		return 1 // Standard - single binding
-	} else {
-		return 2 // Elevated - multiple bindings
-	}
+	return permissionLevelFromCount(c.CountRBACPermissions(ctx, namespace, saName))
 }
 
 // CountRBACPermissions counts the total number of permissions granted via roles
@@ -499,44 +797,279 @@ func (c *Client) CountRBACPermissions(ctx context.Context, namespace, saName str
 	totalPermissions := 0
 
 	// Check RoleBindings in the namespace
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return 0
+	}
 	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, rb := range rbs.Items {
 			for _, subject := range rb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// Get the Role
-					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
-					if err == nil {
-						// Count permissions (verbs) in the role
-						for _, rule := range role.Rules {
-							totalPermissions += len(rule.Verbs)
-						}
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+
+				switch rb.RoleRef.Kind {
+				case "Role":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
 					}
+					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
+					if err != nil {
+						continue
+					}
+					totalPermissions += countPolicyRulesPermissions(role.Rules)
+				case "ClusterRole":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
+					}
+					role, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, rb.RoleRef.Name, metav1.GetOptions{})
+					if err != nil {
+						continue
+					}
+					totalPermissions += countPolicyRulesPermissions(role.Rules)
 				}
 			}
 		}
 	}
 
 	// Check ClusterRoleBindings
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return totalPermissions
+	}
 	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
 	if err == nil {
 		for _, crb := range crbs.Items {
 			for _, subject := range crb.Subjects {
-				if subject.Kind == "ServiceAccount" && subject.Name == saName && subject.Namespace == namespace {
-					// Get the ClusterRole
-					crole, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
-					if err == nil {
-						// Count permissions (verbs) in the cluster role
-						for _, rule := range crole.Rules {
-							totalPermissions += len(rule.Verbs)
-						}
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+
+				switch crb.RoleRef.Kind {
+				case "ClusterRole":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
 					}
+					crole, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
+					if err != nil {
+						continue
+					}
+					totalPermissions += countPolicyRulesPermissions(crole.Rules)
+				case "Role":
+					if err := c.waitForAPIBudget(ctx); err != nil {
+						continue
+					}
+					role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, crb.RoleRef.Name, metav1.GetOptions{})
+					if err != nil {
+						continue
+					}
+					totalPermissions += countPolicyRulesPermissions(role.Rules)
 				}
 			}
 		}
 	}
 
 	return totalPermissions
+}
+
+// CountBoundRoles returns the number of distinct Role/ClusterRole refs bound to the service account.
+func (c *Client) CountBoundRoles(ctx context.Context, namespace, saName string) int {
+	if namespace == "" || saName == "" {
+		return 0
+	}
+
+	refs := make(map[string]struct{})
+
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return 0
+	}
+	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, rb := range rbs.Items {
+			for _, subject := range rb.Subjects {
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+				if rb.RoleRef.Name == "" {
+					continue
+				}
+				refKey := rb.RoleRef.Kind + "/" + rb.RoleRef.Name
+				refs[refKey] = struct{}{}
+				break
+			}
+		}
+	}
+
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return len(refs)
+	}
+	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, crb := range crbs.Items {
+			for _, subject := range crb.Subjects {
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+				if crb.RoleRef.Name == "" {
+					continue
+				}
+				refKey := crb.RoleRef.Kind + "/" + crb.RoleRef.Name
+				refs[refKey] = struct{}{}
+				break
+			}
+		}
+	}
+
+	return len(refs)
+}
+
+// HasRBACPolicy returns whether the service account is referenced by any RBAC binding.
+func (c *Client) HasRBACPolicy(ctx context.Context, namespace, saName string) bool {
+	return c.CountBoundRoles(ctx, namespace, saName) > 0
+}
+
+// MaxRolePermissionCount returns the highest permission count among roles bound to a service account.
+// This is used for role granularity checks (broadest bound role), distinct from total permissions.
+func (c *Client) MaxRolePermissionCount(ctx context.Context, namespace, saName string) int {
+	if namespace == "" || saName == "" {
+		return 0
+	}
+
+	permissionByRef := make(map[string]int)
+
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return 0
+	}
+	rbs, err := c.clientset.RbacV1().RoleBindings(namespace).List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, rb := range rbs.Items {
+			for _, subject := range rb.Subjects {
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+				if rb.RoleRef.Name == "" {
+					continue
+				}
+				refKey := rb.RoleRef.Kind + "/" + rb.RoleRef.Name
+				if _, exists := permissionByRef[refKey]; exists {
+					continue
+				}
+				permissionByRef[refKey] = c.roleRefPermissionCount(ctx, namespace, rb.RoleRef.Kind, rb.RoleRef.Name)
+			}
+		}
+	}
+
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return maxPermissionCount(permissionByRef)
+	}
+	crbs, err := c.clientset.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
+	if err == nil {
+		for _, crb := range crbs.Items {
+			for _, subject := range crb.Subjects {
+				if !rbacSubjectMatchesServiceAccount(subject, namespace, saName) {
+					continue
+				}
+				if crb.RoleRef.Name == "" {
+					continue
+				}
+				refKey := crb.RoleRef.Kind + "/" + crb.RoleRef.Name
+				if _, exists := permissionByRef[refKey]; exists {
+					continue
+				}
+				permissionByRef[refKey] = c.roleRefPermissionCount(ctx, namespace, crb.RoleRef.Kind, crb.RoleRef.Name)
+			}
+		}
+	}
+
+	return maxPermissionCount(permissionByRef)
+}
+
+func (c *Client) roleRefPermissionCount(ctx context.Context, namespace, roleKind, roleName string) int {
+	if roleName == "" {
+		return 0
+	}
+
+	switch roleKind {
+	case "Role":
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return 0
+		}
+		role, err := c.clientset.RbacV1().Roles(namespace).Get(ctx, roleName, metav1.GetOptions{})
+		if err != nil {
+			return 0
+		}
+		return countPolicyRulesPermissions(role.Rules)
+	case "ClusterRole":
+		if err := c.waitForAPIBudget(ctx); err != nil {
+			return 0
+		}
+		role, err := c.clientset.RbacV1().ClusterRoles().Get(ctx, roleName, metav1.GetOptions{})
+		if err != nil {
+			return 0
+		}
+		return countPolicyRulesPermissions(role.Rules)
+	default:
+		return 0
+	}
+}
+
+func maxPermissionCount(permissionByRef map[string]int) int {
+	maxPermissions := 0
+	for _, permissions := range permissionByRef {
+		if permissions > maxPermissions {
+			maxPermissions = permissions
+		}
+	}
+	return maxPermissions
+}
+
+func rbacSubjectMatchesServiceAccount(subject rbacv1.Subject, namespace, saName string) bool {
+	if subject.Kind != "ServiceAccount" || subject.Name != saName {
+		return false
+	}
+
+	// ClusterRoleBinding subjects may legitimately omit namespace; treat empty as match.
+	if subject.Namespace == "" {
+		return true
+	}
+	return subject.Namespace == namespace
+}
+
+func permissionLevelFromCount(permissionCount int) int {
+	switch {
+	case permissionCount <= 0:
+		return 0
+	case permissionCount <= 10:
+		return 1
+	case permissionCount <= 100:
+		return 2
+	default:
+		return 3
+	}
+}
+
+func countPolicyRulesPermissions(rules []rbacv1.PolicyRule) int {
+	total := 0
+	for _, rule := range rules {
+		total += countPolicyRulePermissions(rule)
+	}
+	return total
+}
+
+func countPolicyRulePermissions(rule rbacv1.PolicyRule) int {
+	verbSet := make(map[string]struct{}, len(rule.Verbs))
+	for _, verb := range rule.Verbs {
+		if strings.TrimSpace(verb) == "" {
+			continue
+		}
+		verbSet[verb] = struct{}{}
+	}
+	if len(verbSet) == 0 {
+		return 0
+	}
+	if _, hasWildcard := verbSet["*"]; hasWildcard {
+		return wildcardVerbWeight
+	}
+	return len(verbSet)
 }
 
 // GetNetworkPolicyStatus checks if network policies restrict ingress/egress for a pod
@@ -558,6 +1091,9 @@ func (c *Client) GetNetworkPolicyStatus(ctx context.Context, namespace, podName 
 	}
 
 	// Query all NetworkPolicies in the namespace
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return status
+	}
 	netpols, err := c.clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil || netpols == nil {
 		// No policies found or error - assume no restriction
@@ -702,6 +1238,9 @@ func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace 
 		return false
 	}
 
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return false
+	}
 	netpols, err := c.clientset.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil || netpols == nil {
 		return false
@@ -736,6 +1275,9 @@ func (c *Client) CheckNamespaceDefaultDenyPolicy(ctx context.Context, namespace 
 // Used at enricher startup to pre-populate container ID to pod mappings.
 // Fails gracefully if K8s API is unavailable (returns empty map with error).
 func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, error) {
+	if err := c.waitForAPIBudget(ctx); err != nil {
+		return make(map[string]*PodMetadata), err
+	}
 	podList, err := c.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return make(map[string]*PodMetadata), err
@@ -745,11 +1287,12 @@ func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, erro
 	for _, pod := range podList.Items {
 		// Extract metadata for each pod
 		podMeta := &PodMetadata{
-			Name:           pod.Name,
-			Namespace:      pod.Namespace,
-			UID:            string(pod.UID),
-			ServiceAccount: pod.Spec.ServiceAccountName,
-			Labels:         pod.Labels,
+			Name:              pod.Name,
+			Namespace:         pod.Namespace,
+			UID:               string(pod.UID),
+			ServiceAccount:    pod.Spec.ServiceAccountName,
+			Labels:            pod.Labels,
+			ContainerIDToName: make(map[string]string),
 		}
 
 		// ANCHOR: All-container ID extraction for multi-container mapping - Fix PR-23 #6 - Mar 26, 2026
@@ -765,6 +1308,7 @@ func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, erro
 				id = parts[1]
 			}
 			podMeta.ContainerIDs = append(podMeta.ContainerIDs, id)
+			podMeta.ContainerIDToName[id] = cs.Name
 		}
 		for _, cs := range pod.Status.InitContainerStatuses {
 			if cs.ContainerID == "" {
@@ -776,6 +1320,7 @@ func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, erro
 				id = parts[1]
 			}
 			podMeta.ContainerIDs = append(podMeta.ContainerIDs, id)
+			podMeta.ContainerIDToName[id] = cs.Name
 		}
 		for _, cs := range pod.Status.EphemeralContainerStatuses {
 			if cs.ContainerID == "" {
@@ -787,6 +1332,7 @@ func (c *Client) ListAllPods(ctx context.Context) (map[string]*PodMetadata, erro
 				id = parts[1]
 			}
 			podMeta.ContainerIDs = append(podMeta.ContainerIDs, id)
+			podMeta.ContainerIDToName[id] = cs.Name
 		}
 
 		// Keep ContainerID/ContainerName/Image from first main container for backward compat
@@ -839,6 +1385,8 @@ type PodMetadata struct {
 	// Includes IDs from ContainerStatuses, InitContainerStatuses, EphemeralContainerStatuses.
 	// Used by refreshCgroupPodMappings to register cgroup mappings for all containers.
 	ContainerIDs []string
+	// ContainerIDToName maps normalized container IDs to container names in this pod.
+	ContainerIDToName map[string]string
 
 	// ANCHOR: Security context fields extracted from pod spec - Phase 2.2 fix, Dec 26, 2025
 	// These fields are populated by extracting values from pod.Spec security context
@@ -852,7 +1400,7 @@ type PodMetadata struct {
 	SELinuxLevel    string
 	AppArmorProfile string
 
-	// Container-level security context (from first container)
+	// Container-level security context (from selected/matched container)
 	AllowPrivilegeEscalation bool
 	Privileged               bool
 	ReadOnlyRootFilesystem   bool
@@ -861,23 +1409,27 @@ type PodMetadata struct {
 	HostIPC                  bool
 	HostPID                  bool
 
-	// Resource requests and limits (from first container)
+	// Resource requests and limits (from selected/matched container)
 	MemoryLimit    string
 	MemoryRequest  string
 	CPULimit       string
 	CPURequest     string
 	StorageRequest string
 
-	// Image pull policy (from first container)
+	// Image pull policy (from selected/matched container)
 	ImagePullPolicy string
 
 	// ANCHOR: Compliance signal fields for CIS controls - Mar 22, 2026
 	// Fields populated from annotations, imagePullSecrets, volume mounts, and sysctls.
-	ImageScanStatus   string
-	ImageRegistryAuth bool
-	ImageSigned       bool
-	VolumeType        string
-	KernelHardening   bool
+	ImageScanStatus               string
+	ImageRegistryAuth             bool
+	ImageSigned                   bool
+	VolumeType                    string
+	Runtime                       string
+	ServiceAccountTokenTTLSeconds int64
+	IsolationLevel                int
+	KernelHardening               bool
+	AuditLoggingEnabled           bool
 }
 
 type OwnerReference struct {

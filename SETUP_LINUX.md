@@ -93,9 +93,9 @@ Build agent binary:
 go build -mod=mod -o elf-owl ./cmd/elf-owl
 ```
 
-## 5) Real Kubernetes API Server for Testing
+## 5) Kubernetes Mode (Optional)
 
-`elf-owl` requires Kubernetes API access at startup.
+Use this section only when you want Kubernetes metadata enrichment enabled.
 
 If you already have a real cluster, just point `KUBECONFIG` to it and skip to Step 6.
 If you want a local test-only real API server, use single-node k3s:
@@ -152,6 +152,19 @@ cd /path/to/owl-agent
 sudo env \
   KUBECONFIG=/home/$USER/.kube/config \
   OWL_K8S_IN_CLUSTER=false \
+  OWL_LOG_LEVEL=debug \
+  nohup ./elf-owl >/var/log/elf-owl/agent.log 2>&1 < /dev/null &
+echo $! | sudo tee /var/run/elf-owl/agent.pid
+```
+
+Run in no-K8s mode (no Kubernetes client/metadata required):
+
+```bash
+cd /path/to/owl-agent
+sudo env \
+  OWL_K8S_IN_CLUSTER=false \
+  OWL_KUBERNETES_METADATA=false \
+  OWL_KUBERNETES_ONLY=false \
   OWL_LOG_LEVEL=debug \
   nohup ./elf-owl >/var/log/elf-owl/agent.log 2>&1 < /dev/null &
 echo $! | sudo tee /var/run/elf-owl/agent.pid

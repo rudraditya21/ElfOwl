@@ -7,6 +7,7 @@ LOG_LEVEL="info"
 REBUILD=0
 SYNC=0
 KUBECONFIG_PATH=""
+NO_K8S=0
 
 VM_LOG_FILE="/var/log/elf-owl/agent.log"
 VM_PID_FILE="/var/run/elf-owl/agent.pid"
@@ -21,6 +22,7 @@ Options:
   --project-dir <vm-path>   VM project directory (default: ${VM_PROJECT_DIR})
   --log-level <level>       debug|info|warn|error (default: ${LOG_LEVEL})
   --kubeconfig <vm-path>    KUBECONFIG path inside VM (required outside cluster)
+  --no-k8s                  Run without Kubernetes client/metadata (host-only mode)
   --sync                    Sync source into VM before build/start
   --rebuild                 Force rebuild of elf-owl binary
   -h, --help                Show this help
@@ -33,12 +35,18 @@ while [[ $# -gt 0 ]]; do
     --project-dir) VM_PROJECT_DIR="$2"; shift 2 ;;
     --log-level) LOG_LEVEL="$2"; shift 2 ;;
     --kubeconfig) KUBECONFIG_PATH="$2"; shift 2 ;;
+    --no-k8s) NO_K8S=1; shift ;;
     --sync) SYNC=1; shift ;;
     --rebuild) REBUILD=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+if [[ "$NO_K8S" -eq 1 ]] && [[ -n "$KUBECONFIG_PATH" ]]; then
+  echo "Cannot combine --no-k8s with --kubeconfig."
+  exit 1
+fi
 
 if [[ "$SYNC" -eq 1 ]]; then
   "$SCRIPT_DIR/sync-vm-src.sh" --name "$VM_NAME" --project-dir "$VM_PROJECT_DIR"
@@ -56,9 +64,12 @@ if [[ "$REBUILD" -eq 1 ]] || ! multipass exec "$VM_NAME" -- bash -lc "test -x '$
   "
 fi
 
-KCFG_ENV=""
-if [[ -n "$KUBECONFIG_PATH" ]]; then
-  KCFG_ENV="KUBECONFIG=${KUBECONFIG_PATH} OWL_K8S_IN_CLUSTER=false"
+RUNTIME_ENV="OWL_LOG_LEVEL=${LOG_LEVEL}"
+if [[ "$NO_K8S" -eq 1 ]]; then
+  # Disable all Kubernetes dependencies for monitor-only local/VM runtime.
+  RUNTIME_ENV="${RUNTIME_ENV} OWL_K8S_IN_CLUSTER=false OWL_KUBERNETES_METADATA=false OWL_KUBERNETES_ONLY=false"
+elif [[ -n "$KUBECONFIG_PATH" ]]; then
+  RUNTIME_ENV="${RUNTIME_ENV} KUBECONFIG=${KUBECONFIG_PATH} OWL_K8S_IN_CLUSTER=false"
 fi
 
 echo "[agent] Starting elf-owl..."
@@ -85,7 +96,7 @@ multipass exec "$VM_NAME" -- bash -lc "
   fi
 
   # Start fresh agent process and persist the real process PID.
-  sudo bash -lc \"set -euo pipefail; cd '$VM_PROJECT_DIR'; env ${KCFG_ENV} OWL_LOG_LEVEL=${LOG_LEVEL} nohup ./elf-owl > ${VM_LOG_FILE} 2>&1 < /dev/null & echo \\\$! > ${VM_PID_FILE}\"
+  sudo bash -lc \"set -euo pipefail; cd '$VM_PROJECT_DIR'; env ${RUNTIME_ENV} nohup ./elf-owl > ${VM_LOG_FILE} 2>&1 < /dev/null & echo \\\$! > ${VM_PID_FILE}\"
 "
 
 sleep 2
@@ -93,7 +104,7 @@ if ! multipass exec "$VM_NAME" -- bash -lc "pid=\$(sudo cat '$VM_PID_FILE' 2>/de
   echo "[agent] Agent exited early. Last logs:"
   multipass exec "$VM_NAME" -- bash -lc "sudo tail -n 80 '$VM_LOG_FILE'"
   echo
-  echo "Hint: outside Kubernetes you usually need --kubeconfig <vm-path>"
+  echo "Hint: outside Kubernetes use --kubeconfig <vm-path> or --no-k8s"
   exit 1
 fi
 

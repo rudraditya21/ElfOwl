@@ -49,6 +49,8 @@ agent:
     in_cluster: true
     metadata_cache_ttl: 300s
     watch_interval: 30s
+    # Container->pod lookup first queries AGENT_NAMESPACE (env) before cluster-wide fallback.
+    # In Kubernetes, set AGENT_NAMESPACE from pod metadata.namespace (Helm template does this).
 
   # Rule engine configuration
   rules:
@@ -99,9 +101,9 @@ agent:
 
     # TLS configuration
     tls:
-      enabled: true
+      enabled: false
       verify: true
-      ca_cert_path: "/etc/elf-owl/ca.crt"
+      ca_cert_path: ""
 
   # Prometheus metrics
   metrics:

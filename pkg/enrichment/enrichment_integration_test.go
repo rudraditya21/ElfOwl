@@ -21,19 +21,19 @@ type ProcessEventStub struct {
 }
 
 type NetworkEventStub struct {
-	PID      uint32
-	Family   uint16
-	SPort    uint16
-	DPort    uint16
-	SAddr    uint32
-	DAddr    uint32
-	SAddrV6  [16]byte
-	DAddrV6  [16]byte
-	Protocol uint8
+	PID       uint32
+	Family    uint16
+	SPort     uint16
+	DPort     uint16
+	SAddr     uint32
+	DAddr     uint32
+	SAddrV6   [16]byte
+	DAddrV6   [16]byte
+	Protocol  uint8
 	Direction uint8
-	State    uint8
-	NetNS    uint32
-	CgroupID uint64
+	State     uint8
+	NetNS     uint32
+	CgroupID  uint64
 }
 
 type FileEventStub struct {
@@ -79,7 +79,6 @@ func TestEnrichProcessEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *tes
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -131,20 +130,22 @@ func TestEnrichNetworkEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *tes
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
 	// Create a real NetworkEvent struct
 	networkEvent := NetworkEventStub{
-		PID:      5678,
-		Family:   2,         // AF_INET
-		SPort:    54321,
-		DPort:    443,
-		SAddr:    0xC0A80164, // 192.168.1.100
-		DAddr:    0x0A000001, // 10.0.0.1
-		Protocol: 6,          // TCP
-		CgroupID: 0,
+		PID:       5678,
+		Family:    2, // AF_INET
+		SPort:     54321,
+		DPort:     443,
+		SAddr:     0xC0A80164, // 192.168.1.100
+		DAddr:     0x0A000001, // 10.0.0.1
+		Protocol:  6,          // TCP
+		Direction: 1,          // outbound
+		State:     1,          // ESTABLISHED
+		NetNS:     4026531840,
+		CgroupID:  0,
 	}
 
 	// Call the REAL EnrichNetworkEvent function
@@ -169,6 +170,15 @@ func TestEnrichNetworkEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *tes
 	if enriched != nil && enriched.Network.DestinationPort != 443 {
 		t.Errorf("Expected DestinationPort 443, got %d", enriched.Network.DestinationPort)
 	}
+	if enriched != nil && enriched.Network.Direction != "outbound" {
+		t.Errorf("Expected Direction outbound, got %q", enriched.Network.Direction)
+	}
+	if enriched != nil && enriched.Network.ConnectionState != "ESTABLISHED" {
+		t.Errorf("Expected ConnectionState ESTABLISHED, got %q", enriched.Network.ConnectionState)
+	}
+	if enriched != nil && enriched.Network.NetworkNamespaceID != 4026531840 {
+		t.Errorf("Expected NetNS 4026531840, got %d", enriched.Network.NetworkNamespaceID)
+	}
 }
 
 // TestEnrichDNSEventActuallyReturnsErrNoKubernetesContextWhenNoPod validates real EnrichDNSEvent behavior
@@ -181,7 +191,6 @@ func TestEnrichDNSEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *testing
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -225,7 +234,6 @@ func TestEnrichFileEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *testin
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -271,7 +279,6 @@ func TestEnrichCapabilityEventActuallyReturnsErrNoKubernetesContextWhenNoPod(t *
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -320,15 +327,14 @@ func TestAllEnrichFunctionsActuallyReturnSentinelErrorOnPodAbsent(t *testing.T) 
 		ClusterID:              "test-cluster",
 		NodeName:               "test-node",
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
 	tests := []struct {
-		name        string
-		enrichFn    func(context.Context) (*EnrichedEvent, error)
-		eventType   string
-		validateFn  func(*testing.T, *EnrichedEvent)
+		name       string
+		enrichFn   func(context.Context) (*EnrichedEvent, error)
+		eventType  string
+		validateFn func(*testing.T, *EnrichedEvent)
 	}{
 		{
 			name: "process_event",
@@ -402,10 +408,10 @@ func TestAllEnrichFunctionsActuallyReturnSentinelErrorOnPodAbsent(t *testing.T) 
 			name: "capability_event",
 			enrichFn: func(ctx context.Context) (*EnrichedEvent, error) {
 				event := CapabilityEventStub{
-					PID:        4444,
-					Capability: 21, // CAP_SYS_NICE
-					CheckType:  1,
-					CgroupID:   0,
+					PID:         4444,
+					Capability:  21, // CAP_SYS_NICE
+					CheckType:   1,
+					CgroupID:    0,
 					SyscallName: [32]byte{},
 				}
 				copy(event.SyscallName[:], "ioctl")

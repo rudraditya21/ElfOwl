@@ -117,12 +117,21 @@ func TestProcessProgramEmitsEvents(t *testing.T) {
 		t.Fatal("process program reader not initialized")
 	}
 
-	cmd := exec.Command("/bin/echo", "elfowl-ebpf-process")
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("run probe process: %v", err)
+	// ANCHOR: Process probe PID matching - Fix: tracepoint comm ambiguity - Mar 28, 2026
+	// sys_enter_execve reports pre-exec task comm on some kernels, so match by emitted PID.
+	probePIDs := make(map[uint32]struct{}, 6)
+	for i := 0; i < 6; i++ {
+		cmd := exec.Command("/bin/echo", fmt.Sprintf("elfowl-ebpf-process-%d", i))
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start probe process %d: %v", i, err)
+		}
+		probePIDs[uint32(cmd.Process.Pid)] = struct{}{}
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("wait probe process %d: %v", i, err)
+		}
 	}
 
-	deadline := time.Now().Add(4 * time.Second)
+	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
 		data, err := collection.Process.Reader.Read()
 		if err != nil {
@@ -137,9 +146,7 @@ func TestProcessProgramEmitsEvents(t *testing.T) {
 			continue
 		}
 
-		filename := trimNull(evt.Filename[:])
-		argv := trimNull(evt.Argv[:])
-		if strings.Contains(filename, "echo") || strings.Contains(argv, "echo") {
+		if _, ok := probePIDs[evt.PID]; ok {
 			// ANCHOR: CO-RE field assertions - Test: cap/netns validation - Mar 25, 2026
 			// Ensure CO-RE capability reads populate non-zero values.
 			if evt.Capabilities == 0 {
@@ -149,7 +156,7 @@ func TestProcessProgramEmitsEvents(t *testing.T) {
 		}
 	}
 
-	t.Fatal("did not observe process execution event for probe command")
+	t.Fatal("did not observe process execution event for probe PIDs")
 }
 
 func TestNetworkProgramEmitsEvents(t *testing.T) {

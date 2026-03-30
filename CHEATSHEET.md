@@ -172,6 +172,7 @@ scripts/start-agent.sh
   Purpose: build/start elf-owl inside VM; supports kubeconfig override.
   Common:  scripts/start-agent.sh --name elf-owl-dev --log-level debug --kubeconfig /home/ubuntu/.kube/config
   Common:  scripts/start-agent.sh --name elf-owl-dev --sync --rebuild --log-level debug --kubeconfig /home/ubuntu/.kube/config
+  No-K8s:  scripts/start-agent.sh --name elf-owl-dev --sync --rebuild --log-level debug --no-k8s
 
 scripts/stop-agent.sh
   Purpose: stop tracked and orphan elf-owl process in VM.
@@ -201,6 +202,7 @@ scripts/generate-events.sh
 scripts/test-live-events.sh
   Purpose: one-shot live flow (optional k8s setup, restart agent, generate/check events).
   Common:  scripts/test-live-events.sh --name elf-owl-dev --sync --rebuild --sample-lines 5
+  No-K8s:  scripts/test-live-events.sh --name elf-owl-dev --sync --rebuild --sample-lines 5 --without-k8s
 ```
 
 ## 6) Daily Operations

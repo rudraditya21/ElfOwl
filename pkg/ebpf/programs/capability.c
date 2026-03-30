@@ -30,6 +30,23 @@ struct {
 	__type(value, __u32);
 } capability_syscalls SEC(".maps");
 
+// ANCHOR: Capability event emit helper - Fix: missing cap tracepoint fallback - Mar 28, 2026
+// Emits a normalized capability_event payload from either cap_capable or syscall fallback paths.
+static __always_inline int emit_capability_event(void *ctx, __u32 pid, __u32 cap, __u8 check_type, __u32 syscall_id)
+{
+	struct capability_event evt = {};
+
+	evt.pid = pid;
+	evt.capability = cap;
+	evt.check_type = check_type;
+	evt.syscall_id = syscall_id;
+	evt.cgroup_id = bpf_get_current_cgroup_id();
+	bpf_get_current_comm(evt.syscall_name, sizeof(evt.syscall_name));
+
+	bpf_perf_event_output(ctx, &capability_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
+	return 0;
+}
+
 // ANCHOR: Capability syscall attribution - Feature: syscall_id mapping - Mar 25, 2026
 // Track the last syscall id per PID for cap_capable events.
 SEC("tracepoint/raw_syscalls/sys_enter")
@@ -39,16 +56,22 @@ int capability_syscall_track(struct trace_event_raw_sys_enter *ctx)
 	__u32 id = (__u32)ctx->id;
 
 	bpf_map_update_elem(&capability_syscalls, &pid, &id, BPF_ANY);
+
+	// ANCHOR: CAP_SYS_ADMIN syscall fallback - Fix: kernels without cap_capable tracepoint - Mar 28, 2026
+	// Some kernels (including common cloud/VM builds) omit capability/cap_capable tracepoints.
+	// Emit CAP_SYS_ADMIN usage events from privileged mount-family syscalls as a compatibility fallback.
+	if (id == __NR_mount || id == __NR_umount2) {
+		return emit_capability_event(ctx, pid, CAP_SYS_ADMIN, 2, id);
+	}
+
 	return 0;
 }
 
 SEC("tracepoint/capability/cap_capable")
 int capability_monitor(struct bpf_raw_tracepoint_args *ctx)
 {
-	struct capability_event evt = {};
-
 	__u32 pid = current_pid();
-	__u32 cap = (__u32)ctx->args[2];  // ✅ correct extraction
+	__u32 cap = (__u32)ctx->args[2];
 	__u32 syscall_id = 0;
 	__u32 *found_id;
 
@@ -65,16 +88,7 @@ int capability_monitor(struct bpf_raw_tracepoint_args *ctx)
 		bpf_map_delete_elem(&capability_syscalls, &pid);
 	}
 
-	evt.pid = pid;
-	evt.capability = cap;
-	evt.check_type = 1;
-	evt.syscall_id = syscall_id;
-	evt.cgroup_id = bpf_get_current_cgroup_id();
-	bpf_get_current_comm(evt.syscall_name, sizeof(evt.syscall_name));
-
-	// SUBMIT_EVENT(ctx, capability_events, &evt);
-	bpf_perf_event_output(ctx, &capability_events, BPF_F_CURRENT_CPU, &evt, sizeof(evt));
-	return 0;
+	return emit_capability_event(ctx, pid, cap, 1, syscall_id);
 }
 
 char LICENSE[] SEC("license") = "GPL";

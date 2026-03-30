@@ -9,7 +9,11 @@ import (
 	"fmt"
 )
 
-//go:embed programs/bin/*.o
+// ANCHOR: Embed bin directory with .gitkeep fallback - Fix: build blocker without precompiled .o - Mar 29, 2026
+// Use a directory-wide pattern so `go build` works even when object files are not prebuilt yet.
+// Runtime loading still requires named `<program>.o` artifacts; GetProgram returns a clear error otherwise.
+//
+//go:embed programs/bin/*
 var programFiles embed.FS
 
 // GetProgram returns the compiled eBPF bytecode for the named program
@@ -18,7 +22,7 @@ var programFiles embed.FS
 func GetProgram(name string) ([]byte, error) {
 	data, err := programFiles.ReadFile(fmt.Sprintf("programs/bin/%s.o", name))
 	if err != nil {
-		return nil, fmt.Errorf("failed to load %s.o bytecode: %w", name, err)
+		return nil, fmt.Errorf("failed to load %s.o bytecode (run make -C pkg/ebpf/programs all): %w", name, err)
 	}
 	return data, nil
 }

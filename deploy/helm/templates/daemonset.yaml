@@ -59,6 +59,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.owl.apiTokenSecret }}
                   key: api-token
+            - name: AGENT_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
 
           ports:
             - name: metrics

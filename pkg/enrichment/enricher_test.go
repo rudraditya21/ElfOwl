@@ -1,8 +1,10 @@
 package enrichment
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // TestErrNoKubernetesContextSentinel verifies that the sentinel error is properly defined
@@ -72,5 +74,31 @@ func BenchmarkErrNoKubernetesContextCheck(b *testing.B) {
 		if errors.Is(err, ErrNoKubernetesContext) {
 			// Sentinel detected
 		}
+	}
+}
+
+func TestWithEnrichmentTimeoutSetsDeadline(t *testing.T) {
+	ctx, cancel := withEnrichmentTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatalf("expected deadline to be set")
+	}
+}
+
+func TestWithEnrichmentTimeoutKeepsShorterParentDeadline(t *testing.T) {
+	parent, cancelParent := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancelParent()
+
+	ctx, cancel := withEnrichmentTimeout(parent, 2*time.Second)
+	defer cancel()
+
+	parentDeadline, _ := parent.Deadline()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("expected deadline from parent context")
+	}
+	if !deadline.Equal(parentDeadline) {
+		t.Fatalf("expected child context deadline to match parent deadline")
 	}
 }

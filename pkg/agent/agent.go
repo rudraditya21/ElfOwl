@@ -7,9 +7,15 @@ package agent
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -67,6 +73,7 @@ type Agent struct {
 	Cipher      *evidence.Cipher
 	APIClient   *api.Client
 	EventBuffer *evidence.Buffer
+	ruleMu      sync.RWMutex
 
 	// Metrics
 	MetricsRegistry MetricsRecorder
@@ -96,12 +103,6 @@ type HealthStatus struct {
 	Status           string          `json:"status"`
 }
 
-// ANCHOR: Monitor bootstrapping fallback - Phase 3.5 Week 4
-// Provides placeholder ProgramSet instances until bytecode loading is available.
-func newMonitorProgramSet() *ebpf.ProgramSet {
-	return &ebpf.ProgramSet{}
-}
-
 // NewAgent creates a new agent instance with all components
 func NewAgent(config *Config) (*Agent, error) {
 	// Initialize logger
@@ -119,56 +120,24 @@ func NewAgent(config *Config) (*Agent, error) {
 		startTime:       time.Now(),
 	}
 
-	// ANCHOR: Initialize cilium/ebpf monitors if enabled - Dec 27, 2025
-	// Create monitor with nil ProgramSet (will be loaded by Start())
-	if config.Agent.EBPF.Enabled {
-		if config.Agent.EBPF.Process.Enabled {
-			processMonitor := ebpf.NewProcessMonitor(newMonitorProgramSet(), agent.Logger)
-			agent.ProcessMonitor = processMonitor
-			agent.Logger.Info("process monitor initialized")
-		}
+	// ANCHOR: Defer monitor creation to Start() - Fix: placeholder ProgramSet lifecycle fragility - Mar 29, 2026
+	// Monitor instances are now created only after LoadProgramsWithOptions succeeds so
+	// partially initialized placeholder monitors are not kept on the agent instance.
 
-		if config.Agent.EBPF.Network.Enabled {
-			networkMonitor := ebpf.NewNetworkMonitor(newMonitorProgramSet(), agent.Logger)
-			agent.NetworkMonitor = networkMonitor
-			agent.Logger.Info("network monitor initialized")
+	// ANCHOR: Optional Kubernetes client bootstrap - Feature: monitor-only no-k8s mode - Mar 28, 2026
+	// When kubernetes_metadata is disabled, skip Kubernetes client creation entirely.
+	var k8sClient *kubernetes.Client
+	if config.Agent.Enrichment.KubernetesMetadata {
+		k8sClient, err = kubernetes.NewClient(config.Agent.Kubernetes.InCluster)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
 		}
-
-		if config.Agent.EBPF.DNS.Enabled {
-			dnsMonitor := ebpf.NewDNSMonitor(newMonitorProgramSet(), agent.Logger)
-			agent.DNSMonitor = dnsMonitor
-			agent.Logger.Info("DNS monitor initialized")
-		}
-
-		if config.Agent.EBPF.File.Enabled {
-			fileMonitor := ebpf.NewFileMonitor(newMonitorProgramSet(), agent.Logger)
-			agent.FileMonitor = fileMonitor
-			agent.Logger.Info("file monitor initialized")
-		}
-
-		if config.Agent.EBPF.Capability.Enabled {
-			capMonitor := ebpf.NewCapabilityMonitor(newMonitorProgramSet(), agent.Logger)
-			agent.CapabilityMonitor = capMonitor
-			agent.Logger.Info("capability monitor initialized")
-		}
-	}
-
-	// Initialize Kubernetes client
-	k8sClient, err := kubernetes.NewClient(config.Agent.Kubernetes.InCluster)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create kubernetes client: %w", err)
-	}
-	agent.K8sClient = k8sClient
-	agent.Logger.Info("kubernetes client initialized")
-
-	enricherK8sClient := agent.K8sClient
-	if !config.Agent.Enrichment.KubernetesMetadata {
-		agent.Logger.Warn("kubernetes metadata enrichment disabled", zap.Bool("kubernetes_only", config.Agent.Enrichment.KubernetesOnly))
-		if config.Agent.Enrichment.KubernetesOnly {
-			// Note: This condition should be caught by config.Validate(), but log the accuracy here for clarity.
-			agent.Logger.Warn("kubernetes_only enabled while kubernetes_metadata is disabled; all events without K8s context will be discarded")
-		}
-		enricherK8sClient = nil
+		agent.K8sClient = k8sClient
+		agent.Logger.Info("kubernetes client initialized")
+	} else {
+		agent.K8sClient = nil
+		agent.Logger.Warn("kubernetes metadata enrichment disabled; running without Kubernetes client",
+			zap.Bool("kubernetes_only", config.Agent.Enrichment.KubernetesOnly))
 	}
 
 	// Initialize rule engine with configurable rule source
@@ -179,14 +148,17 @@ func NewAgent(config *Config) (*Agent, error) {
 		RuleFilePath:       config.Agent.Rules.FilePath,
 		ConfigMapName:      config.Agent.Rules.ConfigMap.Name,
 		ConfigMapNamespace: config.Agent.Rules.ConfigMap.Namespace,
-		K8sClientset:       k8sClient.GetClientset(), // Pass K8s client for ConfigMap API access
 		Ctx:                context.Background(),
+	}
+	if k8sClient != nil {
+		// Pass K8s client for ConfigMap rule loading when available.
+		engineConfig.K8sClientset = k8sClient.GetClientset()
 	}
 	ruleEngine, err := rules.NewEngineWithConfig(engineConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create rule engine: %w", err)
 	}
-	agent.RuleEngine = ruleEngine
+	agent.setRuleEngine(ruleEngine)
 
 	// Log which rule source was used
 	if config.Agent.Rules.FilePath != "" {
@@ -201,7 +173,7 @@ func NewAgent(config *Config) (*Agent, error) {
 	}
 
 	// Initialize enricher
-	enricher, err := enrichment.NewEnricher(enricherK8sClient, config.Agent.ClusterID, config.Agent.NodeName)
+	enricher, err := enrichment.NewEnricher(agent.K8sClient, config.Agent.ClusterID, config.Agent.NodeName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enricher: %w", err)
 	}
@@ -250,8 +222,7 @@ func NewAgent(config *Config) (*Agent, error) {
 		config.Agent.OWL.TLS.ClientKeyPath,
 	)
 	if err != nil {
-		agent.Logger.Warn("TLS config build failed, using system defaults", zap.Error(err))
-		tlsCfg = nil
+		return nil, fmt.Errorf("failed to build TLS config: %w", err)
 	}
 
 	// Initialize Owl API client
@@ -396,6 +367,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	if a.K8sClient != nil {
 		go a.startComplianceWatchers(ctx)
 	}
+	go a.watchRuleUpdates(ctx)
 
 	// ANCHOR: Respect owl_api.push.enabled - Bugfix: prevent unintended push loop - Mar 22, 2026
 	// Only start the push goroutine when explicitly enabled in config.
@@ -458,7 +430,11 @@ func (a *Agent) handleRuntimeEvent(
 		}
 	}
 
-	violations := a.RuleEngine.Match(enrichedEvent)
+	ruleEngine := a.getRuleEngine()
+	if ruleEngine == nil {
+		return
+	}
+	violations := ruleEngine.Match(enrichedEvent)
 	if len(violations) > 0 {
 		a.metricsMutex.Lock()
 		a.violationsFound += int64(len(violations))
@@ -690,7 +666,11 @@ func (a *Agent) handleComplianceEvent(ctx context.Context, event *enrichment.Enr
 		return
 	}
 
-	violations := a.RuleEngine.Match(event)
+	ruleEngine := a.getRuleEngine()
+	if ruleEngine == nil {
+		return
+	}
+	violations := ruleEngine.Match(event)
 	if len(violations) > 0 {
 		a.metricsMutex.Lock()
 		a.violationsFound += int64(len(violations))
@@ -779,6 +759,91 @@ func (a *Agent) collectMetrics(ctx context.Context) {
 		case <-a.done:
 			return
 
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+const ruleReloadInterval = 30 * time.Second
+const ruleReloadTimeout = 10 * time.Second
+
+func (a *Agent) getRuleEngine() *rules.Engine {
+	a.ruleMu.RLock()
+	defer a.ruleMu.RUnlock()
+	return a.RuleEngine
+}
+
+func (a *Agent) setRuleEngine(engine *rules.Engine) {
+	a.ruleMu.Lock()
+	defer a.ruleMu.Unlock()
+	a.RuleEngine = engine
+}
+
+func ruleEngineSignature(engine *rules.Engine) string {
+	if engine == nil {
+		return ""
+	}
+	payload, err := json.Marshal(engine.Rules)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *Agent) ruleEngineConfig(ctx context.Context) *rules.EngineConfig {
+	cfg := &rules.EngineConfig{
+		RuleFilePath:       a.Config.Agent.Rules.FilePath,
+		ConfigMapName:      a.Config.Agent.Rules.ConfigMap.Name,
+		ConfigMapNamespace: a.Config.Agent.Rules.ConfigMap.Namespace,
+		Ctx:                ctx,
+	}
+	if a.K8sClient != nil {
+		cfg.K8sClientset = a.K8sClient.GetClientset()
+	}
+	return cfg
+}
+
+func (a *Agent) watchRuleUpdates(ctx context.Context) {
+	if a.Config == nil {
+		return
+	}
+
+	filePath := strings.TrimSpace(a.Config.Agent.Rules.FilePath)
+	configMapName := strings.TrimSpace(a.Config.Agent.Rules.ConfigMap.Name)
+	configMapNamespace := strings.TrimSpace(a.Config.Agent.Rules.ConfigMap.Namespace)
+	if filePath == "" && (configMapName == "" || configMapNamespace == "") {
+		return
+	}
+
+	ticker := time.NewTicker(ruleReloadInterval)
+	defer ticker.Stop()
+
+	currentSignature := ruleEngineSignature(a.getRuleEngine())
+
+	for {
+		select {
+		case <-ticker.C:
+			reloadCtx, cancel := context.WithTimeout(ctx, ruleReloadTimeout)
+			engine, err := rules.NewEngineWithConfig(a.ruleEngineConfig(reloadCtx))
+			cancel()
+			if err != nil {
+				a.Logger.Warn("rule reload failed", zap.Error(err))
+				continue
+			}
+
+			nextSignature := ruleEngineSignature(engine)
+			if nextSignature == "" || nextSignature == currentSignature {
+				continue
+			}
+
+			a.setRuleEngine(engine)
+			currentSignature = nextSignature
+			a.Logger.Info("rules reloaded", zap.Int("rule_count", len(engine.Rules)))
+
+		case <-a.done:
+			return
 		case <-ctx.Done():
 			return
 		}
@@ -878,9 +943,13 @@ func (a *Agent) getSigningKey() string {
 		return string(data)
 	}
 
-	// Return default (insecure - for development only)
-	a.Logger.Warn("using default signing key - NOT SECURE")
-	return "ZGVmYXVsdC1zaWduaW5nLWtleS0tLW5vdC1zZWN1cmUtZm9yLWRldmVsb3BtZW50LW9ubHk="
+	// Generate an ephemeral key when no key is configured.
+	key, err := generateEphemeralKey()
+	if err != nil {
+		a.Logger.Fatal("failed to generate ephemeral signing key", zap.Error(err))
+	}
+	a.Logger.Warn("using generated ephemeral signing key; configure ELF_OWL_SIGNING_KEY or /var/run/secrets/elf-owl-signing-key for stable identity")
+	return key
 }
 
 func (a *Agent) getEncryptionKey() string {
@@ -894,13 +963,12 @@ func (a *Agent) getEncryptionKey() string {
 		return string(data)
 	}
 
-	// ANCHOR: Default development encryption key - Dec 26, 2025
-	// 32-byte key (256-bit) base64-encoded for AES-256-GCM
-	// This decodes to exactly 32 bytes (verified: len(base64.StdEncoding.DecodeString(...)) == 32)
-	// Pattern: 32 repetitions of 0x55, base64-encoded = "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU="
-	// This is intentionally insecure for development/testing only - NEVER use in production
-	a.Logger.Warn("using default encryption key - NOT SECURE - development only")
-	return "VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVU="
+	key, err := generateEphemeralKey()
+	if err != nil {
+		a.Logger.Fatal("failed to generate ephemeral encryption key", zap.Error(err))
+	}
+	a.Logger.Warn("using generated ephemeral encryption key; configure ELF_OWL_ENCRYPTION_KEY or /var/run/secrets/elf-owl-encryption-key for stable encryption")
+	return key
 }
 
 func (a *Agent) getJWTToken() string {
@@ -917,4 +985,12 @@ func (a *Agent) getJWTToken() string {
 	// No token found
 	a.Logger.Warn("no JWT token found - API authentication will fail")
 	return ""
+}
+
+func generateEphemeralKey() (string, error) {
+	keyBytes := make([]byte, 32)
+	if _, err := rand.Read(keyBytes); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(keyBytes), nil
 }

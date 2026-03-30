@@ -21,11 +21,13 @@ type MetadataCache struct {
 	cgroupExpiry   map[uint64]time.Time
 	expiry         map[string]time.Time
 	ttlSeconds     int64
+	cleanupStop    chan struct{}
+	cleanupTicker  *time.Ticker
 }
 
 // NewMetadataCache creates a new metadata cache
 func NewMetadataCache(ttlSeconds int64) *MetadataCache {
-	return &MetadataCache{
+	cache := &MetadataCache{
 		pods:              make(map[string]*PodMetadata),
 		nodes:             make(map[string]*NodeMetadata),
 		containerMappings: make(map[string]string),
@@ -33,6 +35,63 @@ func NewMetadataCache(ttlSeconds int64) *MetadataCache {
 		cgroupExpiry:      make(map[uint64]time.Time),
 		expiry:            make(map[string]time.Time),
 		ttlSeconds:        ttlSeconds,
+		cleanupStop:       make(chan struct{}),
+	}
+	cache.startCleanupLoop()
+	return cache
+}
+
+func (m *MetadataCache) cleanupInterval() time.Duration {
+	if m == nil || m.ttlSeconds <= 0 {
+		return 10 * time.Minute
+	}
+	ttl := time.Duration(m.ttlSeconds) * time.Second
+	interval := ttl
+	if interval > 10*time.Minute {
+		interval = 10 * time.Minute
+	}
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	return interval
+}
+
+func (m *MetadataCache) startCleanupLoop() {
+	if m == nil {
+		return
+	}
+	m.cleanupTicker = time.NewTicker(m.cleanupInterval())
+	go func() {
+		for {
+			select {
+			case <-m.cleanupTicker.C:
+				m.cleanupExpired(time.Now())
+			case <-m.cleanupStop:
+				m.cleanupTicker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+func (m *MetadataCache) cleanupExpired(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for key, expiry := range m.expiry {
+		if now.After(expiry) {
+			delete(m.expiry, key)
+			delete(m.pods, key)
+			delete(m.nodes, key)
+			delete(m.containerMappings, key)
+		}
+	}
+
+	for cgroupID, expiry := range m.cgroupExpiry {
+		if now.After(expiry) {
+			delete(m.cgroupExpiry, cgroupID)
+			delete(m.cgroupMappings, cgroupID)
+		}
 	}
 }
 
@@ -97,6 +156,19 @@ func (m *MetadataCache) Clear() {
 	m.cgroupMappings = make(map[uint64]string)
 	m.cgroupExpiry = make(map[uint64]time.Time)
 	m.expiry = make(map[string]time.Time)
+}
+
+// Close stops background cleanup.
+func (m *MetadataCache) Close() {
+	if m == nil {
+		return
+	}
+	select {
+	case <-m.cleanupStop:
+		return
+	default:
+		close(m.cleanupStop)
+	}
 }
 
 // Size returns the current cache size

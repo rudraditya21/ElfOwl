@@ -1,6 +1,5 @@
 // ANCHOR: CIS control rule matching engine - Dec 26, 2025
 // Matches enriched events against CIS Kubernetes v1.8 control rules
-// IMPLEMENTATION IN PROGRESS - Week 2 task
 
 package rules
 
@@ -8,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -251,10 +252,10 @@ func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Conditi
 	// Evaluate based on operator
 	switch cond.Operator {
 	case "equals", "==":
-		return reflect.DeepEqual(fieldValue, cond.Value)
+		return normalizedEqual(fieldValue, cond.Value)
 
 	case "not_equals", "!=":
-		return !reflect.DeepEqual(fieldValue, cond.Value)
+		return !normalizedEqual(fieldValue, cond.Value)
 
 	case "contains":
 		// String contains check
@@ -268,6 +269,9 @@ func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Conditi
 	case "in":
 		return valueInSlice(cond.Value, fieldValue)
 
+	case "not_in":
+		return !valueInSlice(cond.Value, fieldValue)
+
 	case "greater_than":
 		fv, fOk := toFloat(fieldValue)
 		cv, cOk := toFloat(cond.Value)
@@ -277,6 +281,22 @@ func (e *Engine) evaluateCondition(event *enrichment.EnrichedEvent, cond Conditi
 		fv, fOk := toFloat(fieldValue)
 		cv, cOk := toFloat(cond.Value)
 		return fOk && cOk && fv < cv
+
+	case "regex":
+		pattern, ok := cond.Value.(string)
+		if !ok {
+			return false
+		}
+		str, ok := fieldValue.(string)
+		if !ok {
+			return false
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			e.Logger.Warn("invalid regex pattern", zap.String("pattern", pattern), zap.Error(err))
+			return false
+		}
+		return re.MatchString(str)
 
 	default:
 		e.Logger.Warn("unknown operator", zap.String("operator", cond.Operator))
@@ -546,12 +566,34 @@ func valueInSlice(condValue interface{}, fieldValue interface{}) bool {
 	}
 
 	for i := 0; i < val.Len(); i++ {
-		if reflect.DeepEqual(val.Index(i).Interface(), fieldValue) {
+		if normalizedEqual(val.Index(i).Interface(), fieldValue) {
 			return true
 		}
 	}
 
 	return false
+}
+
+func normalizedEqual(lhs, rhs interface{}) bool {
+	if lf, ok := toFloat(lhs); ok {
+		if rf, ok := toFloat(rhs); ok {
+			return lf == rf
+		}
+	}
+
+	if lb, ok := toBool(lhs); ok {
+		if rb, ok := toBool(rhs); ok {
+			return lb == rb
+		}
+	}
+
+	ls, lOK := lhs.(string)
+	rs, rOK := rhs.(string)
+	if lOK && rOK {
+		return ls == rs
+	}
+
+	return reflect.DeepEqual(lhs, rhs)
 }
 
 // toFloat converts ints uints etc. to float64 for comparisons
@@ -578,6 +620,21 @@ func toFloat(value interface{}) (float64, bool) {
 	}
 }
 
+func toBool(value interface{}) (bool, bool) {
+	switch v := value.(type) {
+	case bool:
+		return v, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return false, false
+		}
+		return parsed, true
+	default:
+		return false, false
+	}
+}
+
 // Helper functions
 
 func contains(slice []string, item string) bool {
@@ -590,9 +647,7 @@ func contains(slice []string, item string) bool {
 }
 
 // loadCISRules loads all CIS Kubernetes v1.8 control rules
-// ANCHOR: Load stub CIS rules from cis_mappings.go - Dec 26, 2025
-// Returns the 6 automated stub controls defined in CISControls variable.
-// Full implementation with 48 total automated controls planned for Week 2.
+// ANCHOR: Load CIS rules from in-repo mappings - Dec 26, 2025
 func loadCISRules() []*Rule {
 	return CISControls
 }

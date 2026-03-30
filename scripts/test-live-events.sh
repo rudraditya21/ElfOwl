@@ -8,6 +8,7 @@ REBUILD=0
 LOG_LEVEL="debug"
 SAMPLE_LINES="5"
 ENSURE_K8S=1
+RUN_NO_K8S=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -23,6 +24,7 @@ Options:
   --log-level <level>       Agent log level (default: ${LOG_LEVEL})
   --sample-lines <n>        Sample lines per event type (default: ${SAMPLE_LINES})
   --no-k8s-setup            Do not run setup-k8s-vm.sh
+  --without-k8s             Start agent in no-k8s mode (no K8s client/metadata)
   -h, --help                Show this help
 USAGE
 }
@@ -36,10 +38,16 @@ while [[ $# -gt 0 ]]; do
     --log-level) LOG_LEVEL="$2"; shift 2 ;;
     --sample-lines) SAMPLE_LINES="$2"; shift 2 ;;
     --no-k8s-setup) ENSURE_K8S=0; shift ;;
+    --without-k8s) RUN_NO_K8S=1; ENSURE_K8S=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
 done
+
+if [[ "$RUN_NO_K8S" -eq 1 ]] && [[ -n "${KUBECONFIG_PATH}" ]]; then
+  # keep user-provided value ignored in --without-k8s mode to avoid mixed signals
+  KUBECONFIG_PATH=""
+fi
 
 if [[ "$ENSURE_K8S" -eq 1 ]]; then
   "$SCRIPT_DIR/setup-k8s-vm.sh" --name "$VM_NAME" --kubeconfig "$KUBECONFIG_PATH"
@@ -48,7 +56,12 @@ fi
 "$SCRIPT_DIR/stop-agent.sh" --name "$VM_NAME" || true
 "$SCRIPT_DIR/vm-exec.sh" --name "$VM_NAME" --no-cd -- bash -lc "sudo truncate -s 0 /var/log/elf-owl/agent.log || true"
 
-start_args=(--name "$VM_NAME" --kubeconfig "$KUBECONFIG_PATH" --log-level "$LOG_LEVEL")
+start_args=(--name "$VM_NAME" --log-level "$LOG_LEVEL")
+if [[ "$RUN_NO_K8S" -eq 1 ]]; then
+  start_args+=(--no-k8s)
+else
+  start_args+=(--kubeconfig "$KUBECONFIG_PATH")
+fi
 if [[ "$SYNC" -eq 1 ]]; then
   start_args+=(--sync)
 fi
@@ -59,6 +72,22 @@ fi
 "$SCRIPT_DIR/start-agent.sh" "${start_args[@]}"
 sleep 2
 
+if [[ "$RUN_NO_K8S" -eq 1 ]]; then
+  echo "[test] Running no-k8s smoke assertions..."
+  "$SCRIPT_DIR/vm-exec.sh" --name "$VM_NAME" --no-cd -- bash -lc "
+    set -euo pipefail
+    curl -sf http://127.0.0.1:9091/health >/dev/null
+    if ! sudo grep -q 'running without Kubernetes client' /var/log/elf-owl/agent.log; then
+      echo 'expected no-k8s startup log not found'
+      exit 1
+    fi
+    if sudo grep -q 'failed to create kubernetes client' /var/log/elf-owl/agent.log; then
+      echo 'unexpected kubernetes client init failure log found'
+      exit 1
+    fi
+  "
+fi
+
 "$SCRIPT_DIR/generate-events.sh" --name "$VM_NAME"
 sleep 2
 
@@ -67,4 +96,3 @@ echo
 "$SCRIPT_DIR/event-summary.sh" --name "$VM_NAME"
 echo
 "$SCRIPT_DIR/check-event-values.sh" --name "$VM_NAME" --lines "$SAMPLE_LINES"
-

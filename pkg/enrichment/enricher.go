@@ -31,11 +31,6 @@ type Enricher struct {
 	NodeName  string
 	Logger    *zap.Logger
 
-	// ANCHOR: Container to pod mapping cache for fast lookups - Phase 2, Dec 26, 2025
-	// Caches containerID -> namespace/podname mappings to avoid repeated K8s API queries
-	containerToPodMutex sync.RWMutex
-	containerToPodCache map[string]string // containerID -> "namespace/podname"
-
 	// ANCHOR: cgroupID to containerID cache - Fix PR-23 #3 /proc race - Mar 25, 2026
 	// CgroupID is captured in kernel at event time (race-free). Used as fallback when
 	// /proc/<pid>/cgroup is unreadable (process already exited).
@@ -49,6 +44,25 @@ type Enricher struct {
 }
 
 const cgroupMappingRefreshInterval = 30 * time.Second
+const enrichmentK8sTimeout = 2 * time.Second
+
+func withEnrichmentTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if timeout <= 0 {
+		return ctx, func() {}
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		if time.Until(deadline) <= timeout {
+			return ctx, func() {}
+		}
+	}
+
+	return context.WithTimeout(ctx, timeout)
+}
 
 // NewEnricher creates a new event enricher
 // ANCHOR: Enricher initialization without circular dependency - Dec 26, 2025
@@ -61,7 +75,6 @@ func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string) (*Enr
 		ClusterID:              clusterID,
 		NodeName:               nodeName,
 		Logger:                 logger,
-		containerToPodCache:    make(map[string]string),
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -214,6 +227,48 @@ func protocolName(proto uint64) string {
 		return "tcp"
 	default:
 		return "unknown"
+	}
+}
+
+func networkDirectionName(direction uint64) string {
+	switch direction {
+	case 1:
+		return "outbound"
+	case 2:
+		return "inbound"
+	default:
+		return "unknown"
+	}
+}
+
+func tcpConnectionStateName(state uint64) string {
+	switch state {
+	case 1:
+		return "ESTABLISHED"
+	case 2:
+		return "SYN_SENT"
+	case 3:
+		return "SYN_RECV"
+	case 4:
+		return "FIN_WAIT1"
+	case 5:
+		return "FIN_WAIT2"
+	case 6:
+		return "TIME_WAIT"
+	case 7:
+		return "CLOSE"
+	case 8:
+		return "CLOSE_WAIT"
+	case 9:
+		return "LAST_ACK"
+	case 10:
+		return "LISTEN"
+	case 11:
+		return "CLOSING"
+	case 12:
+		return "NEW_SYN_RECV"
+	default:
+		return "UNKNOWN"
 	}
 }
 
@@ -440,11 +495,15 @@ func (e *Enricher) resolvePodMetadataFromCgroupMapping(ctx context.Context, cgro
 	if !found || mapping == "" {
 		return nil, nil
 	}
-	parts := strings.Split(mapping, "/")
-	if len(parts) != 2 {
+	parts := strings.SplitN(mapping, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return nil, nil
 	}
-	metadata, err := e.K8sClient.GetPodMetadata(ctx, parts[0], parts[1])
+	containerName := ""
+	if len(parts) == 3 {
+		containerName = parts[2]
+	}
+	metadata, err := e.K8sClient.GetPodMetadataForContainer(ctx, parts[0], parts[1], containerName)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +534,7 @@ func (e *Enricher) refreshCgroupPodMappings(ctx context.Context, force bool) {
 		return
 	}
 
-	for mapping, podMeta := range pods {
+	for baseMapping, podMeta := range pods {
 		if podMeta == nil {
 			continue
 		}
@@ -501,9 +560,12 @@ func (e *Enricher) refreshCgroupPodMappings(ctx context.Context, force bool) {
 			e.cgroupToContainerCache[cgroupID] = containerID
 			e.cgroupToContainerMutex.Unlock()
 
-			e.containerToPodMutex.Lock()
-			e.containerToPodCache[containerID] = mapping
-			e.containerToPodMutex.Unlock()
+			mapping := baseMapping
+			if podMeta.ContainerIDToName != nil {
+				if containerName, ok := podMeta.ContainerIDToName[containerID]; ok && containerName != "" {
+					mapping = fmt.Sprintf("%s/%s/%s", podMeta.Namespace, podMeta.Name, containerName)
+				}
+			}
 
 			e.K8sClient.GetCache().SetContainerMapping(containerID, mapping)
 			e.K8sClient.GetCache().SetCgroupMapping(cgroupID, mapping)
@@ -581,17 +643,36 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string, cgrou
 		return nil, nil
 	}
 
-	// Check local enricher cache first
-	e.containerToPodMutex.RLock()
-	cachedMapping, found := e.containerToPodCache[containerID]
-	e.containerToPodMutex.RUnlock()
+	// Use Kubernetes client cache as the single source of truth for container mappings.
+	cachedMapping, found := e.K8sClient.GetCache().GetContainerMapping(containerID)
 
 	if found {
-		// Parse cached mapping: "namespace/podname"
-		parts := strings.Split(cachedMapping, "/")
-		if len(parts) == 2 {
-			// Use K8s client to retrieve the pod metadata with its cache
-			metadata, err := e.K8sClient.GetPodMetadata(ctx, parts[0], parts[1])
+		// Parse cached mapping: "namespace/podname[/container]"
+		parts := strings.SplitN(cachedMapping, "/", 3)
+		if len(parts) >= 2 {
+			namespace := parts[0]
+			podName := parts[1]
+			containerName := ""
+			if len(parts) == 3 {
+				containerName = parts[2]
+			}
+
+			if containerName == "" {
+				// Backward-compatible path for old cache entries that only stored namespace/pod.
+				// Resolve again via container ID to recover the specific container context.
+				metadata, err := e.K8sClient.GetPodByContainerID(ctx, containerID)
+				if err == nil && metadata != nil {
+					mapping := fmt.Sprintf("%s/%s", metadata.Namespace, metadata.Name)
+					if metadata.ContainerName != "" {
+						mapping = fmt.Sprintf("%s/%s/%s", metadata.Namespace, metadata.Name, metadata.ContainerName)
+					}
+					e.K8sClient.GetCache().SetContainerMapping(containerID, mapping)
+					return metadata, nil
+				}
+			}
+
+			// Use K8s client to retrieve pod metadata with container-specific context.
+			metadata, err := e.K8sClient.GetPodMetadataForContainer(ctx, namespace, podName, containerName)
 			if err != nil {
 				e.Logger.Debug("failed to get pod metadata from cache", zap.Error(err))
 				return nil, err
@@ -610,9 +691,10 @@ func (e *Enricher) getPodMetadata(ctx context.Context, containerID string, cgrou
 	if metadata != nil {
 		// Cache the mapping locally for future use
 		mapping := fmt.Sprintf("%s/%s", metadata.Namespace, metadata.Name)
-		e.containerToPodMutex.Lock()
-		e.containerToPodCache[containerID] = mapping
-		e.containerToPodMutex.Unlock()
+		if metadata.ContainerName != "" {
+			mapping = fmt.Sprintf("%s/%s/%s", metadata.Namespace, metadata.Name, metadata.ContainerName)
+		}
+		e.K8sClient.GetCache().SetContainerMapping(containerID, mapping)
 
 		// Also cache cgroupID -> containerID mapping for fast fallback lookups
 		if cgroupID != 0 {
@@ -670,6 +752,8 @@ func applyPodComplianceFields(containerCtx *ContainerContext, podMeta *PodMetada
 	containerCtx.ImageSigned = podMeta.ImageSigned
 	containerCtx.StorageRequest = podMeta.StorageRequest
 	containerCtx.VolumeType = podMeta.VolumeType
+	containerCtx.Runtime = podMeta.Runtime
+	containerCtx.IsolationLevel = podMeta.IsolationLevel
 	containerCtx.KernelHardening = podMeta.KernelHardening
 }
 
@@ -682,6 +766,12 @@ func (e *Enricher) EnrichProcessEvent(
 	ctx context.Context,
 	rawEvent interface{},
 ) (*EnrichedEvent, error) {
+	if e.K8sClient != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = withEnrichmentTimeout(ctx, enrichmentK8sTimeout)
+		defer cancel()
+	}
+
 	if rawEvent == nil {
 		return nil, fmt.Errorf("nil process event")
 	}
@@ -734,6 +824,14 @@ func (e *Enricher) EnrichProcessEvent(
 		k8sCtx.ImageRegistry = e.parseImageRegistry(podMeta.Image)
 		k8sCtx.ImageTag = e.parseImageTag(podMeta.Image)
 		k8sCtx.Labels = podMeta.Labels
+		if podMeta.OwnerRef != nil {
+			k8sCtx.OwnerRef = &OwnerReference{
+				Kind: podMeta.OwnerRef.Kind,
+				Name: podMeta.OwnerRef.Name,
+				UID:  podMeta.OwnerRef.UID,
+			}
+		}
+		k8sCtx.AuditLoggingEnabled = podMeta.AuditLoggingEnabled
 		containerCtx.ContainerName = podMeta.ContainerName
 
 		// ANCHOR: Extract RBAC context from ServiceAccount and Role bindings - Phase 2.3, Dec 26, 2025
@@ -746,17 +844,21 @@ func (e *Enricher) EnrichProcessEvent(
 				// Calculate token age (current time - token creation time)
 				if saMeta.TokenCreatedAt > 0 {
 					k8sCtx.ServiceAccountTokenAge = time.Now().Unix() - saMeta.TokenCreatedAt
+				} else if podMeta.ServiceAccountTokenTTLSeconds > 0 {
+					// Projected SA tokens (K8s 1.22+) are not persisted as Secrets.
+					// Use configured token lifetime as an age/lifetime surrogate signal.
+					k8sCtx.ServiceAccountTokenAge = podMeta.ServiceAccountTokenTTLSeconds
 				}
 			}
 
 			// Get RBAC privilege level (0=restricted, 1=standard, 2=elevated, 3=admin)
 			k8sCtx.RBACLevel = e.K8sClient.GetRBACLevel(ctx, podMeta.Namespace, podMeta.ServiceAccount)
-			k8sCtx.RBACEnforced = k8sCtx.RBACLevel >= 0 // Always true if we got a result
+			k8sCtx.RBACEnforced = e.K8sClient.IsRBACAPIEnabled(ctx)
 
 			// Count permission grants
 			k8sCtx.ServiceAccountPermissions = e.K8sClient.CountRBACPermissions(ctx, podMeta.Namespace, podMeta.ServiceAccount)
-			k8sCtx.RBACPolicyDefined = k8sCtx.ServiceAccountPermissions > 0
-			k8sCtx.RolePermissionCount = k8sCtx.ServiceAccountPermissions
+			k8sCtx.RolePermissionCount = e.K8sClient.MaxRolePermissionCount(ctx, podMeta.Namespace, podMeta.ServiceAccount)
+			k8sCtx.RBACPolicyDefined = e.K8sClient.HasRBACPolicy(ctx, podMeta.Namespace, podMeta.ServiceAccount)
 		}
 	}
 
@@ -845,6 +947,12 @@ func (e *Enricher) EnrichNetworkEvent(
 	ctx context.Context,
 	rawEvent interface{},
 ) (*EnrichedEvent, error) {
+	if e.K8sClient != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = withEnrichmentTimeout(ctx, enrichmentK8sTimeout)
+		defer cancel()
+	}
+
 	if rawEvent == nil {
 		return nil, fmt.Errorf("nil network event")
 	}
@@ -885,6 +993,14 @@ func (e *Enricher) EnrichNetworkEvent(
 		k8sCtx.ServiceAccount = podMeta.ServiceAccount
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
+		if podMeta.OwnerRef != nil {
+			k8sCtx.OwnerRef = &OwnerReference{
+				Kind: podMeta.OwnerRef.Kind,
+				Name: podMeta.OwnerRef.Name,
+				UID:  podMeta.OwnerRef.UID,
+			}
+		}
+		k8sCtx.AuditLoggingEnabled = podMeta.AuditLoggingEnabled
 		containerCtx.ContainerName = podMeta.ContainerName
 		// ANCHOR: Compliance fields for network events - Feature: image/volume/kernel signals - Mar 22, 2026
 		// Propagates pod-derived compliance signals into network events for rule evaluation.
@@ -900,6 +1016,9 @@ func (e *Enricher) EnrichNetworkEvent(
 		SourcePort:         sourcePortVal,
 		DestinationPort:    destPortVal,
 		Protocol:           protocolVal,
+		Direction:          networkDirectionName(fieldUintValue(v, "Direction")),
+		ConnectionState:    tcpConnectionStateName(fieldUintValue(v, "State")),
+		NetworkNamespaceID: uint32(fieldUintValue(v, "NetNS")),
 		IngressRestricted:  false,
 		EgressRestricted:   false,
 		NamespaceIsolation: false,
@@ -948,6 +1067,12 @@ func (e *Enricher) EnrichDNSEvent(
 	ctx context.Context,
 	rawEvent interface{},
 ) (*EnrichedEvent, error) {
+	if e.K8sClient != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = withEnrichmentTimeout(ctx, enrichmentK8sTimeout)
+		defer cancel()
+	}
+
 	if rawEvent == nil {
 		return nil, fmt.Errorf("nil DNS event")
 	}
@@ -987,6 +1112,14 @@ func (e *Enricher) EnrichDNSEvent(
 		k8sCtx.ServiceAccount = podMeta.ServiceAccount
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
+		if podMeta.OwnerRef != nil {
+			k8sCtx.OwnerRef = &OwnerReference{
+				Kind: podMeta.OwnerRef.Kind,
+				Name: podMeta.OwnerRef.Name,
+				UID:  podMeta.OwnerRef.UID,
+			}
+		}
+		k8sCtx.AuditLoggingEnabled = podMeta.AuditLoggingEnabled
 		containerCtx.ContainerName = podMeta.ContainerName
 		// ANCHOR: Compliance fields for DNS events - Feature: image/volume/kernel signals - Mar 22, 2026
 		// Propagates pod-derived compliance signals into DNS events for rule evaluation.
@@ -1027,6 +1160,12 @@ func (e *Enricher) EnrichFileEvent(
 	ctx context.Context,
 	rawEvent interface{},
 ) (*EnrichedEvent, error) {
+	if e.K8sClient != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = withEnrichmentTimeout(ctx, enrichmentK8sTimeout)
+		defer cancel()
+	}
+
 	if rawEvent == nil {
 		return nil, fmt.Errorf("nil file event")
 	}
@@ -1066,6 +1205,14 @@ func (e *Enricher) EnrichFileEvent(
 		k8sCtx.ServiceAccount = podMeta.ServiceAccount
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
+		if podMeta.OwnerRef != nil {
+			k8sCtx.OwnerRef = &OwnerReference{
+				Kind: podMeta.OwnerRef.Kind,
+				Name: podMeta.OwnerRef.Name,
+				UID:  podMeta.OwnerRef.UID,
+			}
+		}
+		k8sCtx.AuditLoggingEnabled = podMeta.AuditLoggingEnabled
 		containerCtx.ContainerName = podMeta.ContainerName
 		// ANCHOR: Compliance fields for file events - Feature: image/volume/kernel signals - Mar 22, 2026
 		// Propagates pod-derived compliance signals into file events for rule evaluation.
@@ -1117,6 +1264,12 @@ func (e *Enricher) EnrichCapabilityEvent(
 	ctx context.Context,
 	rawEvent interface{},
 ) (*EnrichedEvent, error) {
+	if e.K8sClient != nil {
+		var cancel context.CancelFunc
+		ctx, cancel = withEnrichmentTimeout(ctx, enrichmentK8sTimeout)
+		defer cancel()
+	}
+
 	if rawEvent == nil {
 		return nil, fmt.Errorf("nil capability event")
 	}
@@ -1160,6 +1313,14 @@ func (e *Enricher) EnrichCapabilityEvent(
 		k8sCtx.ServiceAccount = podMeta.ServiceAccount
 		k8sCtx.Image = podMeta.Image
 		k8sCtx.Labels = podMeta.Labels
+		if podMeta.OwnerRef != nil {
+			k8sCtx.OwnerRef = &OwnerReference{
+				Kind: podMeta.OwnerRef.Kind,
+				Name: podMeta.OwnerRef.Name,
+				UID:  podMeta.OwnerRef.UID,
+			}
+		}
+		k8sCtx.AuditLoggingEnabled = podMeta.AuditLoggingEnabled
 		containerCtx.ContainerName = podMeta.ContainerName
 		// ANCHOR: Compliance fields for capability events - Feature: image/volume/kernel signals - Mar 22, 2026
 		// Propagates pod-derived compliance signals into capability events for rule evaluation.

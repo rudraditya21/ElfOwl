@@ -56,6 +56,14 @@
 #define __NR_chmod 90
 #endif
 
+#ifndef __NR_mount
+#define __NR_mount 165
+#endif
+
+#ifndef __NR_umount2
+#define __NR_umount2 166
+#endif
+
 #ifndef __NR_openat
 #define __NR_openat 257
 #endif

@@ -1,13 +1,9 @@
 // ANCHOR: CIS Kubernetes v1.8 control rule definitions - Dec 26, 2025
-// Defines all 48 automated + 9 manual CIS controls
-// IMPLEMENTATION IN PROGRESS - Week 2 task
+// Defines automated runtime-detectable CIS controls.
 
 package rules
 
-// CISControls contains all 57 CIS Kubernetes v1.8 controls
-// Breakdown:
-// - 48 automated controls (detectable via eBPF + K8s API)
-// - 9 manual controls (require node/audit access)
+// CISControls contains runtime-detectable CIS Kubernetes controls.
 
 var CISControls = []*Rule{
 	// ===== AUTOMATED CONTROLS =====
@@ -58,8 +54,8 @@ var CISControls = []*Rule{
 				Field:    "capability.name",
 				Operator: "in",
 				Value: []string{
-					"NET_ADMIN", "SYS_ADMIN", "SYS_MODULE",
-					"SYS_PTRACE", "SYS_BOOT", "MAC_ADMIN",
+					"SYS_MODULE", "SYS_BOOT", "SYS_TIME",
+					"SYS_RAWIO", "SYS_PACCT",
 				},
 			},
 		},
@@ -212,8 +208,8 @@ var CISControls = []*Rule{
 				Field:    "capability.name",
 				Operator: "in",
 				Value: []string{
-					"NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE",
-					"SYS_PTRACE", "SYS_BOOT", "MAC_ADMIN", "MAC_OVERRIDE",
+					"NET_ADMIN", "NET_RAW", "SYS_ADMIN",
+					"SYS_PTRACE", "MAC_ADMIN", "MAC_OVERRIDE",
 					"DAC_OVERRIDE", "DAC_READ_SEARCH", "SETFCAP",
 				},
 			},
@@ -261,8 +257,14 @@ var CISControls = []*Rule{
 		Conditions: []Condition{
 			{
 				Field:    "kubernetes.image_registry",
-				Operator: "not_equals",
-				Value:    "docker.io",
+				Operator: "not_in",
+				Value: []string{
+					"docker.io",
+					"gcr.io",
+					"registry.k8s.io",
+					"quay.io",
+					"ghcr.io",
+				},
 			},
 		},
 	},
@@ -625,12 +627,12 @@ var CISControls = []*Rule{
 		ControlID:  "CIS_4.7.1",
 		Title:      "Ensure seccomp profiles are enforced",
 		Severity:   "MEDIUM",
-		EventTypes: []string{"process_execution"},
+		EventTypes: []string{"pod_spec_check"},
 		Conditions: []Condition{
 			{
 				Field:    "container.seccomp_profile",
 				Operator: "equals",
-				Value:    "unconfined",
+				Value:    "",
 			},
 		},
 	},
@@ -640,12 +642,12 @@ var CISControls = []*Rule{
 		ControlID:  "CIS_4.7.2",
 		Title:      "Ensure AppArmor profiles are enforced",
 		Severity:   "MEDIUM",
-		EventTypes: []string{"process_execution"},
+		EventTypes: []string{"pod_spec_check"},
 		Conditions: []Condition{
 			{
 				Field:    "container.apparmor_profile",
 				Operator: "equals",
-				Value:    "unconfined",
+				Value:    "",
 			},
 		},
 	},
@@ -700,21 +702,26 @@ var CISControls = []*Rule{
 	},
 
 	// CIS 4.9.1: Container runtime security
+	// ANCHOR: Runtime allowlist violation rule - Clarification: approved runtime set - Mar 29, 2026
+	// Triggers when runtime is outside the approved set (containerd/cri-o).
 	{
 		ControlID:  "CIS_4.9.1",
-		Title:      "Ensure container runtime is from official sources",
+		Title:      "Ensure container runtime is from approved sources",
 		Severity:   "HIGH",
 		EventTypes: []string{"pod_spec_check"},
 		Conditions: []Condition{
 			{
 				Field:    "container.runtime",
-				Operator: "not_equals",
-				Value:    "docker",
+				Operator: "not_in",
+				Value:    []string{"containerd", "cri-o", "crio"},
 			},
 		},
 	},
 
 	// CIS 4.9.2: Container isolation enforcement
+	// ANCHOR: Isolation threshold tuning - Signal quality fix - Mar 29, 2026
+	// `isolation_level < 1` targets containers with no effective hardening signals.
+	// Level 1+ is treated as baseline hardened to reduce noisy false positives.
 	{
 		ControlID:  "CIS_4.9.2",
 		Title:      "Ensure container isolation is properly configured",
@@ -724,7 +731,7 @@ var CISControls = []*Rule{
 			{
 				Field:    "container.isolation_level",
 				Operator: "less_than",
-				Value:    2,
+				Value:    1,
 			},
 		},
 	},
@@ -743,30 +750,4 @@ var CISControls = []*Rule{
 			},
 		},
 	},
-
-	// ===== MANUAL CONTROLS (Cannot be auto-detected via eBPF) =====
-	// These require node access or audit logs:
-	// - CIS 1.1.x: API server configuration files
-	// - CIS 1.2.x: API server flags
-	// - CIS 1.3.x: Controller manager configuration
-	// - CIS 1.5.x: etcd encryption
-	// - CIS 4.2.x: Kubelet configuration
 }
-
-// ANCHOR: Week 2 Phase 1 Implementation Complete - Dec 26, 2025
-// Expanded from 6 to 48 automated CIS controls organized by category:
-// - Pod Security Context Controls (8 rules: CIS 4.2.x)
-// - Container Image & Registry Controls (6 rules: CIS 4.3.x)
-// - Resource Management Controls (5 rules: CIS 4.4.x)
-// - Network Policy Controls (5 rules: CIS 4.6.x)
-// - RBAC & Access Controls (10 rules: CIS 5.x.x)
-// - Advanced Security Context Controls (9 rules: CIS 4.7-4.9)
-// Total automated controls: 48 (out of 57 CIS Kubernetes v1.8 controls)
-
-// Week 2 remaining tasks:
-// - [ ] Implement rule loading from file (LoadRulesFromFile)
-// - [ ] Implement rule loading from ConfigMap (LoadRulesFromConfigMap)
-// - [ ] Update engine to use flexible rule loading
-// - [ ] Add field extraction for new rule conditions
-// - [ ] Add rule testing with sample events
-// - [ ] Add remediation documentation
