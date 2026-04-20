@@ -1029,3 +1029,69 @@ func BenchmarkRuleMatching(b *testing.B) {
 		engine.Match(event)
 	}
 }
+
+// TestExtractFieldAutomountServiceAccountToken verifies extractField handles the
+// kubernetes.automount_service_account_token field correctly.
+// ANCHOR: Regression test for CIS_5.2.1 extractField fix - Bug: field was missing from switch - Apr 20, 2026
+func TestExtractFieldAutomountServiceAccountToken(t *testing.T) {
+	engine := createTestEngine()
+
+	trueEvent := &enrichment.EnrichedEvent{
+		Kubernetes: &enrichment.K8sContext{AutomountServiceAccountToken: true},
+	}
+	falseEvent := &enrichment.EnrichedEvent{
+		Kubernetes: &enrichment.K8sContext{AutomountServiceAccountToken: false},
+	}
+	nilK8sEvent := &enrichment.EnrichedEvent{Kubernetes: nil}
+
+	if got := engine.extractField(trueEvent, "kubernetes.automount_service_account_token"); got != true {
+		t.Errorf("expected true, got %v", got)
+	}
+	if got := engine.extractField(falseEvent, "kubernetes.automount_service_account_token"); got != false {
+		t.Errorf("expected false, got %v", got)
+	}
+	if got := engine.extractField(nilK8sEvent, "kubernetes.automount_service_account_token"); got != nil {
+		t.Errorf("expected nil for nil Kubernetes context, got %v", got)
+	}
+}
+
+// TestCIS521RuleMatchSemantics verifies CIS_5.2.1 fires when automount is true and not when false.
+// Rule: operator "equals", value true — violation means auto-mount is enabled (misconfigured).
+// ANCHOR: Regression test for CIS_5.2.1 rule match semantics - Bug: rule never fired - Apr 20, 2026
+func TestCIS521RuleMatchSemantics(t *testing.T) {
+	engine, err := NewEngine()
+	if err != nil {
+		t.Fatalf("failed to create engine: %v", err)
+	}
+
+	makeEvent := func(automount bool) *enrichment.EnrichedEvent {
+		return &enrichment.EnrichedEvent{
+			EventType: "pod_spec_check",
+			Kubernetes: &enrichment.K8sContext{
+				AutomountServiceAccountToken: automount,
+			},
+			Timestamp: time.Now(),
+		}
+	}
+
+	hasViolation := func(violations []*Violation, controlID string) bool {
+		for _, v := range violations {
+			if v.ControlID == controlID {
+				return true
+			}
+		}
+		return false
+	}
+
+	// automount=true: pod is misconfigured, CIS_5.2.1 must fire
+	violations := engine.Match(makeEvent(true))
+	if !hasViolation(violations, "CIS_5.2.1") {
+		t.Error("expected CIS_5.2.1 violation when AutomountServiceAccountToken=true, got none")
+	}
+
+	// automount=false: pod is correctly configured, CIS_5.2.1 must not fire
+	violations = engine.Match(makeEvent(false))
+	if hasViolation(violations, "CIS_5.2.1") {
+		t.Error("expected no CIS_5.2.1 violation when AutomountServiceAccountToken=false, got one")
+	}
+}

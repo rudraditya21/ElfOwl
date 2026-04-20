@@ -433,6 +433,13 @@ func (e *Engine) extractField(event *enrichment.EnrichedEvent, fieldPath string)
 		if event.Kubernetes != nil {
 			return event.Kubernetes.AuditLoggingEnabled
 		}
+	// ANCHOR: extractField case for automount_service_account_token - Bug: CIS_5.2.1 never fires - Apr 20, 2026
+	// cis_mappings.go:526 uses operator "equals", value true — fires when auto-mount is on.
+	// Without this case, extractField returns nil and the condition never satisfies.
+	case "kubernetes.automount_service_account_token":
+		if event.Kubernetes != nil {
+			return event.Kubernetes.AutomountServiceAccountToken
+		}
 
 	// Container context fields
 	case "container.id":
