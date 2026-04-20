@@ -82,9 +82,8 @@ type Agent struct {
 	MetricsRegistry MetricsRecorder
 
 	// Control channels
-	done       chan struct{}
-	eventsChan chan interface{}
-	startTime  time.Time
+	done      chan struct{}
+	startTime time.Time
 
 	// ANCHOR: Mutex-protected counters for goroutine safety - Dec 26, 2025
 	// Multiple event handler goroutines (process, network, file, capability) access
@@ -118,7 +117,6 @@ func NewAgent(config *Config) (*Agent, error) {
 		Config:          config,
 		Logger:          zapLogger,
 		done:            make(chan struct{}),
-		eventsChan:      make(chan interface{}, 1000),
 		MetricsRegistry: metrics.NewRegistry(),
 		startTime:       time.Now(),
 		ruleReloadInterval: ruleReloadInterval,
