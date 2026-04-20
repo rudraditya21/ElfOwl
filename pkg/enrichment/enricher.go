@@ -853,7 +853,16 @@ func (e *Enricher) EnrichProcessEvent(
 
 			// Get RBAC privilege level (0=restricted, 1=standard, 2=elevated, 3=admin)
 			k8sCtx.RBACLevel = e.K8sClient.GetRBACLevel(ctx, podMeta.Namespace, podMeta.ServiceAccount)
+			// ANCHOR: Warn on RBAC fail-open - Bug: unverified RBAC state silently assumed enabled - Apr 20, 2026
+			// probeSucceeded captured BEFORE IsRBACAPIEnabled() so the warning fires whenever the
+			// probe has not yet been confirmed, regardless of what this call returns.
+			// EDGE CASE: if this call is the first successful probe, probeSucceeded=false fires the
+			// warning one final time before the memo flips. This one-call lag is intentional.
+			probeSucceeded := e.K8sClient.HasSuccessfulRBACProbe()
 			k8sCtx.RBACEnforced = e.K8sClient.IsRBACAPIEnabled(ctx)
+			if !probeSucceeded {
+				e.Logger.Warn("RBAC API probe has not yet succeeded; RBACEnforced state is unverified")
+			}
 
 			// Count permission grants
 			k8sCtx.ServiceAccountPermissions = e.K8sClient.CountRBACPermissions(ctx, podMeta.Namespace, podMeta.ServiceAccount)

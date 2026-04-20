@@ -231,7 +231,13 @@ func (a *Agent) buildPodSpecEventForContainer(ctx context.Context, pod *corev1.P
 		}
 
 		k8sCtx.RBACLevel = a.K8sClient.GetRBACLevel(ctx, pod.Namespace, serviceAccountName)
+		// ANCHOR: Warn on RBAC fail-open (compliance watcher) - Bug: unverified RBAC state - Apr 20, 2026
+		// Same one-call-lag pattern as enricher.go: probe state captured before the call.
+		probeSucceeded := a.K8sClient.HasSuccessfulRBACProbe()
 		k8sCtx.RBACEnforced = a.K8sClient.IsRBACAPIEnabled(ctx)
+		if !probeSucceeded {
+			a.Logger.Warn("RBAC API probe has not yet succeeded; RBACEnforced state is unverified")
+		}
 		k8sCtx.ServiceAccountPermissions = a.K8sClient.CountRBACPermissions(ctx, pod.Namespace, serviceAccountName)
 		k8sCtx.RolePermissionCount = a.K8sClient.MaxRolePermissionCount(ctx, pod.Namespace, serviceAccountName)
 		k8sCtx.RBACPolicyDefined = a.K8sClient.HasRBACPolicy(ctx, pod.Namespace, serviceAccountName)

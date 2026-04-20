@@ -588,6 +588,16 @@ func (c *Client) IsRBACAPIEnabled(ctx context.Context) bool {
 	return enabled
 }
 
+// ANCHOR: HasSuccessfulRBACProbe accessor - API addition: caller visibility into probe state - Apr 20, 2026
+// rbacMemo.checked is true only after a successful serverGroups() call above.
+// Never set on fail-open paths, so this correctly distinguishes confirmed from assumed state.
+// Read-only under RLock; safe for concurrent callers. No existing signatures change.
+func (c *Client) HasSuccessfulRBACProbe() bool {
+	c.rbacMu.RLock()
+	defer c.rbacMu.RUnlock()
+	return c.rbacMemo.checked
+}
+
 func (c *Client) serverGroups() (*metav1.APIGroupList, error) {
 	if c == nil {
 		return nil, fmt.Errorf("kubernetes client is nil")
