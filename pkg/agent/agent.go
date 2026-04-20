@@ -960,8 +960,14 @@ func (a *Agent) getSigningKey() string {
 	}
 
 	// Try reading from secret file
+	// ANCHOR: TrimSpace on secret file reads - Bug: trailing newline corrupts base64 and Authorization headers - Apr 20, 2026
+	// Kubernetes secret volume mounts append a trailing newline to file contents.
+	// DELIBERATE NORMALIZATION: surrounding whitespace in these files is always stripped.
+	// Intentional whitespace in signing keys, encryption keys, or JWT tokens is not a supported
+	// use case — these values are base64 strings or Bearer tokens, both whitespace-sensitive.
+	// Env var sources are trusted as-is; they are not subject to Kubernetes mount behavior.
 	if data, err := os.ReadFile("/var/run/secrets/elf-owl-signing-key"); err == nil {
-		return string(data)
+		return strings.TrimSpace(string(data))
 	}
 
 	// Generate an ephemeral key when no key is configured.
@@ -981,7 +987,7 @@ func (a *Agent) getEncryptionKey() string {
 
 	// Try reading from secret file
 	if data, err := os.ReadFile("/var/run/secrets/elf-owl-encryption-key"); err == nil {
-		return string(data)
+		return strings.TrimSpace(string(data))
 	}
 
 	key, err := generateEphemeralKey()
@@ -1000,7 +1006,7 @@ func (a *Agent) getJWTToken() string {
 
 	// Try reading from secret file (Kubernetes)
 	if data, err := os.ReadFile(a.Config.Agent.OWL.Auth.TokenPath); err == nil {
-		return string(data)
+		return strings.TrimSpace(string(data))
 	}
 
 	// No token found
