@@ -29,6 +29,7 @@ type EnrichedEvent struct {
 	// Network and DNS context
 	Network *NetworkContext `json:"network"`
 	DNS     *DNSContext     `json:"dns"`
+	TLS     *TLSContext     `json:"tls"`
 
 	// Derived fields
 	Timestamp  time.Time `json:"timestamp"`
@@ -170,4 +171,21 @@ type DNSContext struct {
 	ResponseCode   int      `json:"response_code"`
 	QueryAllowed   bool     `json:"query_allowed"`
 	AllowedDomains []string `json:"allowed_domains"`
+}
+
+// TLSContext captures TLS ClientHello metadata and JA3 fingerprinting output.
+type TLSContext struct {
+	JA3Fingerprint string   `json:"ja3_fingerprint"`
+	JA3String      string   `json:"ja3_string"`
+	TLSVersion     string   `json:"tls_version"`
+	Ciphers        []uint16 `json:"ciphers"`
+	Extensions     []uint16 `json:"extensions"`
+	Curves         []uint16 `json:"curves"`
+	PointFormats   []uint8  `json:"point_formats"`
+	SNI            string   `json:"sni,omitempty"`
+	// ANCHOR: TLS certificate fields - Feature: cert_sha256 via active probe - Apr 26, 2026
+	// Populated by userspace TLS probe to host:443 after SNI is known, matching vaanvil approach.
+	CertSHA256  string `json:"cert_sha256,omitempty"`
+	CertIssuer  string `json:"cert_issuer,omitempty"`
+	CertExpiry  int64  `json:"cert_expiry,omitempty"`
 }
