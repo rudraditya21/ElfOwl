@@ -22,6 +22,7 @@ type runtimeMockEnricher struct {
 	dnsFn        enrichCallback
 	fileFn       enrichCallback
 	capabilityFn enrichCallback
+	tlsFn        enrichCallback
 }
 
 func (m *runtimeMockEnricher) EnrichProcessEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error) {
@@ -59,12 +60,19 @@ func (m *runtimeMockEnricher) EnrichCapabilityEvent(ctx context.Context, rawEven
 	return nil, nil
 }
 
+func (m *runtimeMockEnricher) EnrichTLSEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error) {
+	if m.tlsFn != nil {
+		return m.tlsFn(ctx, rawEvent)
+	}
+	return nil, nil
+}
+
 type runtimeMockMetrics struct {
-	hostDiscarded       int64
-	k8sLookupDiscarded  int64
-	enrichmentError     int64
-	eventProcessed      int64
-	violationsFound     int64
+	hostDiscarded      int64
+	k8sLookupDiscarded int64
+	enrichmentError    int64
+	eventProcessed     int64
+	violationsFound    int64
 }
 
 func (m *runtimeMockMetrics) RecordEventProcessed() {
@@ -145,16 +153,16 @@ func TestHandlerRuntimeBehaviorMatrix(t *testing.T) {
 	}
 
 	scenarios := []struct {
-		name                    string
-		kubernetesOnly          bool
-		err                     error
-		returnEnriched          bool
-		wantDiscarded           int64
-		wantK8sLookupDiscarded  int64
-		wantEnrichmentErrors    int64
-		wantProcessed           int64
-		wantBuffered            int
-		wantRawFallback         bool
+		name                   string
+		kubernetesOnly         bool
+		err                    error
+		returnEnriched         bool
+		wantDiscarded          int64
+		wantK8sLookupDiscarded int64
+		wantEnrichmentErrors   int64
+		wantProcessed          int64
+		wantBuffered           int
+		wantRawFallback        bool
 	}{
 		{
 			name:                   "no_pod_discard_when_kubernetes_only_true",
@@ -179,28 +187,28 @@ func TestHandlerRuntimeBehaviorMatrix(t *testing.T) {
 			wantRawFallback:        true,
 		},
 		{
-			name:                    "api_error_discard_when_kubernetes_only_true",
-			kubernetesOnly:          true,
-			err:                     apiErr,
-			returnEnriched:          false,
-			wantDiscarded:           0,
-			wantK8sLookupDiscarded:  1,
-			wantEnrichmentErrors:    1,
-			wantProcessed:           0,
-			wantBuffered:            0,
-			wantRawFallback:         false,
+			name:                   "api_error_discard_when_kubernetes_only_true",
+			kubernetesOnly:         true,
+			err:                    apiErr,
+			returnEnriched:         false,
+			wantDiscarded:          0,
+			wantK8sLookupDiscarded: 1,
+			wantEnrichmentErrors:   1,
+			wantProcessed:          0,
+			wantBuffered:           0,
+			wantRawFallback:        false,
 		},
 		{
-			name:                    "api_error_forward_partial_when_kubernetes_only_false",
-			kubernetesOnly:          false,
-			err:                     apiErr,
-			returnEnriched:          false,
-			wantDiscarded:           0,
-			wantK8sLookupDiscarded:  0,
-			wantEnrichmentErrors:    1,
-			wantProcessed:           1,
-			wantBuffered:            1,
-			wantRawFallback:         true,
+			name:                   "api_error_forward_partial_when_kubernetes_only_false",
+			kubernetesOnly:         false,
+			err:                    apiErr,
+			returnEnriched:         false,
+			wantDiscarded:          0,
+			wantK8sLookupDiscarded: 0,
+			wantEnrichmentErrors:   1,
+			wantProcessed:          1,
+			wantBuffered:           1,
+			wantRawFallback:        true,
 		},
 		{
 			name:                   "success_forward_enriched_event",
@@ -261,9 +269,9 @@ func TestHandlerRuntimeBehaviorMatrix(t *testing.T) {
 				if got := atomic.LoadInt64(&mockMetrics.hostDiscarded); got != scenario.wantDiscarded {
 					t.Fatalf("host discarded: got %d, want %d", got, scenario.wantDiscarded)
 				}
-			if got := atomic.LoadInt64(&mockMetrics.k8sLookupDiscarded); got != scenario.wantK8sLookupDiscarded {
-				t.Fatalf("k8s lookup discarded: got %d, want %d", got, scenario.wantK8sLookupDiscarded)
-			}
+				if got := atomic.LoadInt64(&mockMetrics.k8sLookupDiscarded); got != scenario.wantK8sLookupDiscarded {
+					t.Fatalf("k8s lookup discarded: got %d, want %d", got, scenario.wantK8sLookupDiscarded)
+				}
 				if got := atomic.LoadInt64(&mockMetrics.enrichmentError); got != scenario.wantEnrichmentErrors {
 					t.Fatalf("enrichment errors: got %d, want %d", got, scenario.wantEnrichmentErrors)
 				}
