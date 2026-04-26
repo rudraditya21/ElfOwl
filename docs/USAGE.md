@@ -6,7 +6,7 @@
 
 ## What elf-owl Monitors
 
-elf-owl captures five categories of security-relevant events:
+elf-owl captures six categories of security-relevant events:
 
 ### 1. Process Execution Events
 Monitors when processes are executed on the node, capturing:
@@ -148,7 +148,42 @@ Monitors when processes access files on the filesystem, capturing:
 }
 ```
 
-### 5. Linux Capability Usage Events
+### 5. TLS ClientHello Events
+Monitors outbound TLS connections, capturing:
+- **JA3 fingerprint** - MD5 hash identifying the TLS client implementation
+- **SNI** - Server Name Indication (target hostname)
+- **TLS version** - Negotiated protocol version
+- **Cipher suites** - Client-offered cipher list
+- **Certificate SHA-256** - Leaf certificate fingerprint (via active probe)
+- **Certificate issuer** - CA that issued the server certificate
+
+**Use cases:**
+- Detect unusual TLS client fingerprints (malware, custom tools)
+- Identify connections to servers with untrusted or expired certificates
+- Monitor which external hosts workloads connect to via SNI
+- Forensic attribution of TLS flows to specific processes/pods
+
+**Example enriched event:**
+```json
+{
+  "event_type": "tls_client_hello",
+  "tls": {
+    "ja3_fingerprint": "0149f47eabf9a20d0893e2a44e5a6323",
+    "ja3_string": "771,4866-4867-4865,...,29-23-24,0",
+    "tls_version": "771",
+    "sni": "api.example.com",
+    "cert_sha256": "1b:e0:11:f7:25:35:b4:...",
+    "cert_issuer": "DigiCert Global G2 TLS RSA SHA256 2020 CA1",
+    "cert_expiry": 1767225600
+  },
+  "kubernetes": {
+    "pod_name": "my-app-56d4f9c5b5-abc123",
+    "namespace": "production"
+  }
+}
+```
+
+### 6. Linux Capability Usage Events
 Monitors when processes use Linux capabilities, capturing:
 - **Capability name** - The specific Linux capability (e.g., CAP_NET_RAW)
 - **Capability ID** - Numeric ID of the capability
@@ -316,6 +351,11 @@ agent:
       enabled: true            # Monitor capability usage
       buffer_size: 8192
       timeout: 5s
+
+    tls:
+      enabled: true            # Monitor TLS ClientHello / JA3
+      buffer_size: 4096
+      timeout: 5s
 ```
 
 ### Selective Monitoring
@@ -341,6 +381,9 @@ agent:
 
     capability:
       enabled: false           # Disable capability monitoring
+
+    tls:
+      enabled: true            # Keep TLS monitoring
 ```
 
 ### Logging Configuration
@@ -418,6 +461,8 @@ agent:
       enabled: true
     capability:
       enabled: true
+    tls:
+      enabled: true
 
 owl_api:
   enabled: true
@@ -461,6 +506,8 @@ agent:
     file:
       enabled: true
     capability:
+      enabled: true
+    tls:
       enabled: true
 
 rules:
@@ -526,6 +573,7 @@ Typical event volumes by monitor type (per node per minute):
 - **DNS queries**: 100-2000 events/min (depends on application)
 - **File access**: 1000-10000 events/min (high overhead, consider disabling)
 - **Capability usage**: 100-1000 events/min (usually low)
+- **TLS ClientHello**: 50-500 events/min (one per outbound TLS handshake)
 
 ### Resource Usage
 

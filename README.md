@@ -90,6 +90,16 @@ scripts/start-agent.sh --name elf-owl-dev --sync --rebuild --log-level debug --k
 scripts/start-agent.sh --name elf-owl-dev --sync --rebuild --log-level debug --no-k8s
 ```
 
+### TLS/JA3 local validation profile
+
+Use the isolated profile when you want to test the TLS path without the other monitors generating perf pressure:
+
+```bash
+cp config/elf-owl.tls-only.yaml config/elf-owl.yaml
+go build -o elf-owl ./cmd/elf-owl
+sudo OWL_K8S_IN_CLUSTER=false OWL_KUBERNETES_METADATA=false OWL_KUBERNETES_ONLY=false ./elf-owl
+```
+
 ### Validate
 
 ```bash

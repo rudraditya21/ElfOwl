@@ -1,39 +1,36 @@
-# elf-owl Agent Configuration
-# Default configuration for the compliance observer agent
+# TLS/JA3 validation profile for local testing.
+# Use this file as the active config when you want to isolate the TLS path.
 
 agent:
-  # Cluster identification
   cluster_id: "default"
   node_name: "${HOSTNAME}"
 
-  # Logging configuration
   logging:
-    level: "info"  # debug, info, warn, error
+    level: "debug"
     format: "json"
     output: "stdout"
 
-  # cilium/ebpf Security Monitors (Phase 3: goBPF migration complete)
   ebpf:
-    enabled: true  # Master switch - must be true to enable any monitors
-    kernel_btf_path: ""  # Optional override for kernel BTF (CO-RE)
+    enabled: true
+    kernel_btf_path: ""
     process:
-      enabled: true
+      enabled: false
       buffer_size: 8192
       timeout: 5s
     network:
-      enabled: true
+      enabled: false
       buffer_size: 8192
       timeout: 5s
     dns:
-      enabled: true
+      enabled: false
       buffer_size: 4096
       timeout: 5s
     file:
-      enabled: true
+      enabled: false
       buffer_size: 8192
       timeout: 5s
     capability:
-      enabled: true
+      enabled: false
       buffer_size: 4096
       timeout: 5s
     tls:
@@ -42,36 +39,30 @@ agent:
       timeout: 5s
     perf_buffer:
       enabled: true
-      page_count: 64
+      page_count: 256
       lost_handler: true
     ring_buffer:
-      enabled: false  # Use perf buffer by default (better compatibility)
+      enabled: false
       size: 65536
 
-  # Kubernetes integration
   kubernetes:
-    in_cluster: true
+    in_cluster: false
     metadata_cache_ttl: 300s
-    watch_interval: 30s
-    # Container->pod lookup first queries AGENT_NAMESPACE (env) before cluster-wide fallback.
-    # In Kubernetes, set AGENT_NAMESPACE from pod metadata.namespace (Helm template does this).
+    watch_interval: 0s
 
-  # Rule engine configuration
   rules:
     config_map:
-      name: "elf-owl-rules"
-      namespace: "elf-owl-system"
+      name: ""
+      namespace: ""
     eval_timeout: 5s
     log_violations: true
 
-  # Event enrichment
   enrichment:
-    kubernetes_metadata: true
+    kubernetes_metadata: false
     metadata_cache_size: 10000
     metadata_cache_ttl: 60s
-    kubernetes_only: true    # discard host-process events; set false for bare-metal or mixed deployments
+    kubernetes_only: false
 
-  # Evidence signing and encryption
   evidence:
     signing:
       enabled: true
@@ -80,42 +71,31 @@ agent:
       enabled: true
       algorithm: "AES-256-GCM"
 
-  # Owl SaaS API configuration
   owl_api:
     endpoint: "https://owl-saas.example.com"
-
-    # Authentication
     auth:
       method: "jwt"
       token_path: "/var/run/secrets/owl-jwt-token"
-
-    # Push configuration
     push:
       batch_size: 100
       batch_timeout: 30s
       enabled: true
       dry_run: false
-
-    # Retry configuration
     retry:
       max_retries: 10
       initial_backoff: 1s
       max_backoff: 60s
       backoff_multiplier: 2.0
-
-    # TLS configuration
     tls:
       enabled: false
       verify: true
       ca_cert_path: ""
 
-  # Prometheus metrics
   metrics:
     enabled: true
     listen_address: ":9090"
     path: "/metrics"
 
-  # Health check endpoints
   health:
     enabled: true
     listen_address: ":9091"
