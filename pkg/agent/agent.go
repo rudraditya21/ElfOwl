@@ -960,6 +960,15 @@ func (a *Agent) Stop() error {
 		}
 	}
 
+	// ANCHOR: TLSMonitor shutdown - Fix: resource leak on agent stop - Apr 29, 2026
+	// TLSMonitor.Stop() closes the stopChan, waits for eventLoop goroutine, and unloads eBPF program.
+	if a.TLSMonitor != nil {
+		if err := a.TLSMonitor.Stop(); err != nil {
+			a.Logger.Error("failed to close tls monitor", zap.Error(err))
+			errs = append(errs, err)
+		}
+	}
+
 	if len(errs) > 0 {
 		return fmt.Errorf("errors during shutdown: %v", errs)
 	}
