@@ -10,6 +10,7 @@ SAMPLE_LINES="5"
 ENSURE_K8S=1
 RUN_NO_K8S=0
 ENABLE_WEBHOOK=0
+WEBHOOK_TARGET_URL=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -26,7 +27,8 @@ Options:
   --sample-lines <n>        Sample lines per event type (default: ${SAMPLE_LINES})
   --no-k8s-setup            Do not run setup-k8s-vm.sh
   --without-k8s             Start agent in no-k8s mode (no K8s client/metadata)
-  --enable-webhook          Enable inbound webhook on :9093 and run smoke test
+  --enable-webhook          Enable outbound webhook pusher and run smoke test
+  --webhook-url <url>       Target URL for outbound push (default: http://127.0.0.1:8888/events)
   -h, --help                Show this help
 USAGE
 }
@@ -42,6 +44,7 @@ while [[ $# -gt 0 ]]; do
     --no-k8s-setup) ENSURE_K8S=0; shift ;;
     --without-k8s) RUN_NO_K8S=1; ENSURE_K8S=0; shift ;;
     --enable-webhook) ENABLE_WEBHOOK=1; shift ;;
+    --webhook-url) WEBHOOK_TARGET_URL="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -73,6 +76,8 @@ if [[ "$REBUILD" -eq 1 ]]; then
 fi
 if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
   start_args+=(--enable-webhook)
+  _webhook_target="${WEBHOOK_TARGET_URL:-http://127.0.0.1:8888/events}"
+  start_args+=(--webhook-url "$_webhook_target")
 fi
 
 "$SCRIPT_DIR/start-agent.sh" "${start_args[@]}"
@@ -95,33 +100,64 @@ if [[ "$RUN_NO_K8S" -eq 1 ]]; then
 fi
 
 generate_args=(--name "$VM_NAME")
-if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
-  generate_args+=(--webhook)
-fi
 "$SCRIPT_DIR/generate-events.sh" "${generate_args[@]}"
 sleep 2
 
 if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
-  echo "[test] Running webhook smoke assertions..."
+  echo "[test] Running webhook pusher smoke assertions..."
+  _webhook_target="${WEBHOOK_TARGET_URL:-http://127.0.0.1:8888/events}"
+  _listener_port="$(echo "$_webhook_target" | grep -oP ':\K[0-9]+(?=/)' || echo 8888)"
+  _result_file="/tmp/elf-owl-webhook-smoke-$$"
+
+  # Start a one-shot Python HTTP listener in the background inside the VM.
+  # It writes the first received batch to a temp file then exits.
   "$SCRIPT_DIR/vm-exec.sh" --name "$VM_NAME" --no-cd -- bash -lc "
     set -euo pipefail
-    # Valid type must return 202
-    response=\$(curl -sf -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:9093/webhook/events \
-      -H 'Content-Type: application/json' \
-      -d '{\"type\":\"tls\",\"payload\":{},\"timestamp\":\"2000-01-01T00:00:00Z\"}')
-    if [[ \"\$response\" != '202' ]]; then
-      echo \"expected HTTP 202 from webhook, got \$response\"
+    python3 - '${_listener_port}' '${_result_file}' <<'PYEOF' &
+import sys, http.server, json, os
+
+port   = int(sys.argv[1])
+outfile = sys.argv[2]
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(n)
+        with open(outfile, 'w') as f:
+            f.write(body.decode())
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'ok')
+        raise SystemExit(0)
+    def log_message(self, *a): pass
+
+http.server.HTTPServer(('127.0.0.1', port), H).serve_forever()
+PYEOF
+    echo \$! > /tmp/elf-owl-webhook-listener-pid-$$
+  "
+
+  # Give the listener a moment to bind then re-generate a small event burst.
+  sleep 1
+  "$SCRIPT_DIR/generate-events.sh" --name "$VM_NAME"
+
+  # Wait up to 15 s for the listener to capture a batch.
+  "$SCRIPT_DIR/vm-exec.sh" --name "$VM_NAME" --no-cd -- bash -lc "
+    set -euo pipefail
+    for i in \$(seq 1 15); do
+      if [[ -f '${_result_file}' ]]; then break; fi
+      sleep 1
+    done
+    if [[ ! -f '${_result_file}' ]]; then
+      echo 'webhook smoke: FAIL — no batch received within 15s'
+      # Kill listener if still running
+      pid=\$(cat /tmp/elf-owl-webhook-listener-pid-$$ 2>/dev/null || true)
+      [[ -n \"\$pid\" ]] && kill \"\$pid\" 2>/dev/null || true
       exit 1
     fi
-    # Unknown type must return 400
-    bad=\$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:9093/webhook/events \
-      -H 'Content-Type: application/json' \
-      -d '{\"type\":\"unknown_type\",\"payload\":{}}')
-    if [[ \"\$bad\" != '400' ]]; then
-      echo \"expected HTTP 400 for unknown type, got \$bad\"
-      exit 1
-    fi
-    echo 'webhook smoke: PASS'
+    batch=\$(cat '${_result_file}')
+    count=\$(echo \"\$batch\" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(len(d))')
+    echo \"webhook smoke: PASS — received batch with \${count} event(s)\"
+    rm -f '${_result_file}' /tmp/elf-owl-webhook-listener-pid-$$
   "
 fi
 

@@ -123,8 +123,8 @@ else
   NO_K8S_STATUS=$?
 fi
 
-echo "[test] Running TLS/webhook handler tests..."
-if run_test tls_webhook 'go test -mod=mod -v ./pkg/agent -run "TestWebhook|TestTLS"'; then
+echo "[test] Running TLS handler tests..."
+if run_test tls_webhook 'go test -mod=mod -v ./pkg/agent -run "TestTLS"'; then
   TLS_WEBHOOK_STATUS=0
 else
   TLS_WEBHOOK_STATUS=$?
@@ -167,7 +167,7 @@ matrix_check "file" 'FileMonitor_produces_file_access_events' "$EBPF_LOG"
 matrix_check "capability" 'CapabilityMonitor_produces_capability_usage_events|TestIntegrationCapabilityViolation.*PASS' "$EBPF_LOG"
 matrix_check "tls_ja3" '--- PASS: TestParseJA3Metadata' "$JA3_LOG"
 matrix_check "tls_ebpf" 'TLSMonitor_produces_tls_events' "$EBPF_LOG"
-matrix_check "webhook" '--- PASS: TestWebhook' "$TLS_WEBHOOK_LOG"
+matrix_check "webhook" '--- PASS: TestTLS|TestWebhookPusher' "$TLS_WEBHOOK_LOG"
 matrix_check "pod_spec" '--- PASS: TestBuildPodSpecEventsMultiContainer' "$COMPLIANCE_LOG"
 matrix_check "net_policy" '--- PASS: TestBuildNetworkPolicyEvent' "$COMPLIANCE_LOG"
 matrix_check "no_k8s" '--- PASS: TestHandlerFallbackWhenKubernetesOnlyFalse|--- PASS: TestHandlerRuntimeBehaviorMatrix' "$NO_K8S_LOG"

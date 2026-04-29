@@ -41,13 +41,14 @@ multipass exec "$VM_NAME" -- bash -lc "
   curl -sf http://127.0.0.1:9091/health || echo 'health endpoint unavailable'
 
   echo
-  echo '=== Webhook (:9093) ==='
-  if curl -sf --max-time 1 -X POST http://127.0.0.1:9093/webhook/events \
-      -H 'Content-Type: application/json' \
-      -d '{"type":"tls","payload":{},"timestamp":"2000-01-01T00:00:00Z"}' >/dev/null 2>&1; then
-    echo 'webhook endpoint available'
+  echo '=== Webhook Pusher (outbound) ==='
+  if sudo grep -q 'webhook pusher started' '$VM_LOG_FILE' 2>/dev/null; then
+    target="$(sudo grep 'webhook pusher started' '$VM_LOG_FILE' | tail -1 | grep -oP '(?<="target":")[^"]+' || true)"
+    echo "enabled — pushing to ${target:-<configured target>}"
+    pushes="$(sudo grep -c 'webhook batch pushed' '$VM_LOG_FILE' 2>/dev/null || echo 0)"
+    echo "batches pushed so far: ${pushes}"
   else
-    echo 'webhook endpoint unavailable (disabled by default; start with --enable-webhook to activate)'
+    echo 'disabled (start with --enable-webhook --webhook-url <url> to activate)'
   fi
 
   echo
