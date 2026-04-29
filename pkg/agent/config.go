@@ -211,6 +211,13 @@ func LoadConfig() (*Config, error) {
 				return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 			}
 
+			// ANCHOR: Expand env vars in YAML config - Bug: ${HOSTNAME} rendered literally - Apr 29, 2026
+			// Go's yaml.Unmarshal does not perform shell-style ${VAR} expansion.
+			// Applying os.ExpandEnv before parsing lets the YAML file use ${HOSTNAME},
+			// ${OWL_CLUSTER_ID}, etc. and have them resolved from the process environment.
+			// This mirrors the convention used by Docker Compose and many k8s toolchains.
+			configData = []byte(os.ExpandEnv(string(configData)))
+
 			if err := yaml.Unmarshal(configData, &config); err != nil {
 				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 			}
@@ -290,8 +297,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cluster_id is required")
 	}
 
+	// ANCHOR: node_name fallback chain - Bug: ${HOSTNAME} expands to empty in sudo env - Apr 29, 2026
+	// HOSTNAME is a bash internal variable, not an exported env var; it is absent from the
+	// environment of processes started with sudo or non-login shells. Fall through to
+	// os.Hostname() (a syscall) as a reliable final fallback.
 	if c.Agent.NodeName == "" {
 		c.Agent.NodeName = os.Getenv("HOSTNAME")
+	}
+	if c.Agent.NodeName == "" {
+		if h, err := os.Hostname(); err == nil {
+			c.Agent.NodeName = h
+		}
 	}
 
 	if c.Agent.NodeName == "" {
