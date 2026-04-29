@@ -446,6 +446,84 @@ func procContainerID(pid uint32) string {
 	return ""
 }
 
+// ANCHOR: procUID helper - Bug fix: FileEvent has no UID field - Apr 29, 2026
+// Reads the real UID of a process from /proc/<pid>/status (first Uid: field = real UID).
+// Used by EnrichFileEvent which receives a FileEvent struct that carries no UID.
+// Returns 0 if the process has already exited or the file is unreadable.
+func procUID(pid uint32) uint32 {
+	if pid == 0 {
+		return 0
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "status"))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "Uid:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		uid, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			break
+		}
+		return uint32(uid)
+	}
+	return 0
+}
+
+// ANCHOR: procComm helper - Bug fix: file cmdVal was using Filename (the accessed path) - Apr 29, 2026
+// Reads the short executable name of a process from /proc/<pid>/comm.
+// Used by EnrichFileEvent so Process.Command carries the binary name, not the accessed file path.
+func procComm(pid uint32) string {
+	if pid == 0 {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "comm"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// ANCHOR: sensitive path list - Bug fix: FileContext.Sensitive was never set - Apr 29, 2026
+// Used by isSensitivePath to decide whether a file access should raise the
+// sensitive_file_access threat indicator for analytics.
+var sensitivePaths = []string{
+	"/etc/passwd",
+	"/etc/shadow",
+	"/etc/gshadow",
+	"/etc/master.passwd",
+	"/etc/sudoers",
+	"/etc/sudoers.d",
+	"/etc/ssh",
+	"/root/.ssh",
+	"/.ssh",
+	"/etc/kubernetes",
+	"/var/run/secrets/kubernetes.io",
+	"/run/secrets/kubernetes.io",
+	"/etc/ssl/private",
+	"/etc/pki",
+	"/proc/keys",
+	"/proc/sysrq-trigger",
+}
+
+// isSensitivePath returns true if path equals or is nested under a known sensitive path.
+func isSensitivePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, prefix := range sensitivePaths {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 var errCgroupInodeMatch = errors.New("cgroup inode match")
 
 func containerIDFromCgroupID(cgroupID uint64) string {
@@ -1251,11 +1329,17 @@ func (e *Enricher) EnrichFileEvent(
 	if err != nil {
 		return nil, err
 	}
+	// ANCHOR: File event field extraction - Bug fix: UID/Mode/cmdVal/Sensitive - Apr 29, 2026
+	// FileEvent eBPF struct has no UID field; procUID reads /proc/<pid>/status instead.
+	// procComm reads /proc/<pid>/comm so Process.Command is the binary name, not the accessed path.
+	// Mode is now extracted from the FileEvent struct (used for chmod ops).
+	// Sensitive is derived from isSensitivePath so sensitive_file_access indicator fires correctly.
 	pidVal := uint32(fieldUintValue(v, "PID"))
-	uidVal := uint32(fieldUintValue(v, "UID"))
+	uidVal := procUID(pidVal)
 	pathVal := fieldStringValue(v, "Filename")
 	opVal := fileOperationName(fieldUintValue(v, "Operation"))
-	cmdVal := fieldStringValue(v, "Filename")
+	modeVal := uint32(fieldUintValue(v, "Mode"))
+	cmdVal := procComm(pidVal)
 	cgroupIDVal := fieldUintValue(v, "CgroupID")
 
 	// ANCHOR: Container context propagation - Feature: PID-based container lookup - Jan 2026
@@ -1326,6 +1410,8 @@ func (e *Enricher) EnrichFileEvent(
 			Operation: opVal,
 			PID:       pidVal,
 			UID:       uidVal,
+			Mode:      modeVal,
+			Sensitive: isSensitivePath(pathVal),
 		},
 	}
 
@@ -1370,6 +1456,9 @@ func (e *Enricher) EnrichCapabilityEvent(
 	allowedVal := fieldUintValue(v, "CheckType") != 2
 	nameVal := capabilityNameFromID(capabilityID)
 	cgroupIDVal := fieldUintValue(v, "CgroupID")
+	// ANCHOR: SyscallID extraction - Bug fix: CapabilityContext.SyscallID was always 0 - Apr 29, 2026
+	// CapabilityEvent carries SyscallID but the enricher never forwarded it to CapabilityContext.
+	syscallIDVal := uint32(fieldUintValue(v, "SyscallID"))
 
 	// ANCHOR: Container context propagation - Feature: PID-based container lookup - Jan 2026
 	// Resolve container metadata from PID when available
@@ -1431,10 +1520,11 @@ func (e *Enricher) EnrichCapabilityEvent(
 			Command: cmdVal,
 		},
 		Capability: &CapabilityContext{
-			Name:    nameVal,
-			Allowed: allowedVal,
-			PID:     pidVal,
-			UID:     uidVal,
+			Name:      nameVal,
+			Allowed:   allowedVal,
+			PID:       pidVal,
+			UID:       uidVal,
+			SyscallID: syscallIDVal,
 		},
 	}
 
