@@ -7,6 +7,9 @@ NETWORK_IP="1.1.1.1"
 NETWORK_PORT="80"
 FILE_PATH="/tmp/elf-owl-file-test.txt"
 CAP_MOUNT_PATH="/tmp/elf-owl-capability-test-mount"
+TLS_HOST="example.com"
+WEBHOOK_PORT="9093"
+SEND_WEBHOOK=0
 
 usage() {
   cat <<USAGE
@@ -19,6 +22,9 @@ Options:
   --network-port <port>     TCP destination port (default: ${NETWORK_PORT})
   --file-path <path>        File path to read/write in VM (default: ${FILE_PATH})
   --cap-mount <path>        Mount path for capability trigger (default: ${CAP_MOUNT_PATH})
+  --tls-host <host>         HTTPS host to dial for TLS ClientHello capture (default: ${TLS_HOST})
+  --webhook-port <port>     Webhook listener port (default: ${WEBHOOK_PORT})
+  --webhook                 Also send a typed test event to POST /webhook/events
   -h, --help                Show this help
 USAGE
 }
@@ -31,6 +37,9 @@ while [[ $# -gt 0 ]]; do
     --network-port) NETWORK_PORT="$2"; shift 2 ;;
     --file-path) FILE_PATH="$2"; shift 2 ;;
     --cap-mount) CAP_MOUNT_PATH="$2"; shift 2 ;;
+    --tls-host) TLS_HOST="$2"; shift 2 ;;
+    --webhook-port) WEBHOOK_PORT="$2"; shift 2 ;;
+    --webhook) SEND_WEBHOOK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -48,9 +57,10 @@ fi
 
 multipass start "$VM_NAME" >/dev/null 2>&1 || true
 
-echo "[events] Triggering process/file/network/dns/capability activity in VM '${VM_NAME}'..."
+echo "[events] Triggering process/file/network/dns/capability/tls activity in VM '${VM_NAME}'..."
 multipass exec "$VM_NAME" -- \
-  env DNS_DOMAIN="$DNS_DOMAIN" NETWORK_IP="$NETWORK_IP" NETWORK_PORT="$NETWORK_PORT" FILE_PATH="$FILE_PATH" CAP_MOUNT_PATH="$CAP_MOUNT_PATH" \
+  env DNS_DOMAIN="$DNS_DOMAIN" NETWORK_IP="$NETWORK_IP" NETWORK_PORT="$NETWORK_PORT" \
+      FILE_PATH="$FILE_PATH" CAP_MOUNT_PATH="$CAP_MOUNT_PATH" TLS_HOST="$TLS_HOST" \
   bash -s <<'EOF'
 set -euo pipefail
 
@@ -96,5 +106,21 @@ sudo mount -t tmpfs tmpfs "${CAP_MOUNT_PATH}" >/dev/null 2>&1 || true
 sudo umount "${CAP_MOUNT_PATH}" >/dev/null 2>&1 || true
 sudo rmdir "${CAP_MOUNT_PATH}" >/dev/null 2>&1 || true
 
+echo "[events] tls: outbound HTTPS ClientHello to ${TLS_HOST} (captured by TLS monitor)"
+# curl performs a TLS handshake; the eBPF program captures the ClientHello bytes
+# on the write/sendmsg syscall path and computes a JA3 fingerprint.
+timeout 5 curl -sk "https://${TLS_HOST}" >/dev/null 2>&1 || true
+
 echo '[events] done'
 EOF
+
+if [[ "$SEND_WEBHOOK" -eq 1 ]]; then
+  echo "[events] webhook: sending typed tls test event to :${WEBHOOK_PORT}/webhook/events"
+  multipass exec "$VM_NAME" -- bash -lc "
+    curl -sf -X POST http://127.0.0.1:${WEBHOOK_PORT}/webhook/events \
+      -H 'Content-Type: application/json' \
+      -d '{\"type\":\"tls\",\"payload\":{},\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}' \
+    && echo '[events] webhook tls event accepted' \
+    || echo '[events] webhook unavailable (start agent with --enable-webhook)'
+  "
+fi

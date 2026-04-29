@@ -88,6 +88,13 @@ if [[ "$RUN_KERNEL" -eq 1 ]]; then
   fi
 fi
 
+echo "[test] Running JA3 parser tests..."
+if run_test ja3 'go test -mod=mod -v ./pkg/ja3'; then
+  JA3_STATUS=0
+else
+  JA3_STATUS=$?
+fi
+
 echo "[test] Running eBPF monitor/event tests..."
 if run_test ebpf 'go test -mod=mod -v ./pkg/ebpf'; then
   EBPF_STATUS=0
@@ -116,6 +123,13 @@ else
   NO_K8S_STATUS=$?
 fi
 
+echo "[test] Running TLS/webhook handler tests..."
+if run_test tls_webhook 'go test -mod=mod -v ./pkg/agent -run "TestWebhook|TestTLS"'; then
+  TLS_WEBHOOK_STATUS=0
+else
+  TLS_WEBHOOK_STATUS=$?
+fi
+
 FULL_STATUS="SKIPPED"
 if [[ "$RUN_FULL" -eq 1 ]]; then
   echo "[test] Running full repository tests..."
@@ -140,15 +154,20 @@ matrix_check() {
 echo
 echo "=== Event Path Matrix (from VM tests) ==="
 EBPF_LOG="${RESULTS_DIR}/ebpf.log"
+JA3_LOG="${RESULTS_DIR}/ja3.log"
 RULES_LOG="${RESULTS_DIR}/rules_integration.log"
 COMPLIANCE_LOG="${RESULTS_DIR}/compliance_events.log"
 NO_K8S_LOG="${RESULTS_DIR}/no_k8s_handlers.log"
+TLS_WEBHOOK_LOG="${RESULTS_DIR}/tls_webhook.log"
 
 matrix_check "process" 'ProcessMonitor_produces_process_execution_events|TestIntegrationRootProcessExecution.*PASS' "$EBPF_LOG"
 matrix_check "network" 'NetworkMonitor_produces_network_connection_events|TestIntegrationNetworkPolicyViolation.*PASS' "$EBPF_LOG"
 matrix_check "dns" 'DNSMonitor_produces_dns_query_events|TestIntegrationDNSExfiltration.*PASS' "$EBPF_LOG"
 matrix_check "file" 'FileMonitor_produces_file_access_events' "$EBPF_LOG"
 matrix_check "capability" 'CapabilityMonitor_produces_capability_usage_events|TestIntegrationCapabilityViolation.*PASS' "$EBPF_LOG"
+matrix_check "tls_ja3" '--- PASS: TestParseJA3Metadata' "$JA3_LOG"
+matrix_check "tls_ebpf" 'TLSMonitor_produces_tls_events' "$EBPF_LOG"
+matrix_check "webhook" '--- PASS: TestWebhook' "$TLS_WEBHOOK_LOG"
 matrix_check "pod_spec" '--- PASS: TestBuildPodSpecEventsMultiContainer' "$COMPLIANCE_LOG"
 matrix_check "net_policy" '--- PASS: TestBuildNetworkPolicyEvent' "$COMPLIANCE_LOG"
 matrix_check "no_k8s" '--- PASS: TestHandlerFallbackWhenKubernetesOnlyFalse|--- PASS: TestHandlerRuntimeBehaviorMatrix' "$NO_K8S_LOG"
@@ -183,15 +202,20 @@ fi
 
 echo
 echo "=== Test Status ==="
+echo "ja3 parser tests:      ${JA3_STATUS}"
 echo "ebpf tests:            ${EBPF_STATUS}"
 echo "rules integration:     ${RULES_STATUS}"
 echo "compliance events:     ${COMPLIANCE_STATUS}"
 echo "no-k8s handlers:       ${NO_K8S_STATUS}"
+echo "tls/webhook handlers:  ${TLS_WEBHOOK_STATUS}"
 echo "kernel eBPF tests:     ${KERNEL_STATUS}"
 echo "full repository tests: ${FULL_STATUS}"
 echo "results dir:           ${RESULTS_DIR}"
 
 exit_code=0
+if [[ "$JA3_STATUS" != "0" ]]; then
+  exit_code=1
+fi
 if [[ "$EBPF_STATUS" != "0" ]]; then
   exit_code=1
 fi
@@ -202,6 +226,9 @@ if [[ "$COMPLIANCE_STATUS" != "0" ]]; then
   exit_code=1
 fi
 if [[ "$NO_K8S_STATUS" != "0" ]]; then
+  exit_code=1
+fi
+if [[ "$TLS_WEBHOOK_STATUS" != "0" ]]; then
   exit_code=1
 fi
 if [[ "$RUN_KERNEL" -eq 1 && "$KERNEL_STATUS" != "0" ]]; then

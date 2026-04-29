@@ -9,6 +9,7 @@ LOG_LEVEL="debug"
 SAMPLE_LINES="5"
 ENSURE_K8S=1
 RUN_NO_K8S=0
+ENABLE_WEBHOOK=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -25,6 +26,7 @@ Options:
   --sample-lines <n>        Sample lines per event type (default: ${SAMPLE_LINES})
   --no-k8s-setup            Do not run setup-k8s-vm.sh
   --without-k8s             Start agent in no-k8s mode (no K8s client/metadata)
+  --enable-webhook          Enable inbound webhook on :9093 and run smoke test
   -h, --help                Show this help
 USAGE
 }
@@ -39,6 +41,7 @@ while [[ $# -gt 0 ]]; do
     --sample-lines) SAMPLE_LINES="$2"; shift 2 ;;
     --no-k8s-setup) ENSURE_K8S=0; shift ;;
     --without-k8s) RUN_NO_K8S=1; ENSURE_K8S=0; shift ;;
+    --enable-webhook) ENABLE_WEBHOOK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -68,6 +71,9 @@ fi
 if [[ "$REBUILD" -eq 1 ]]; then
   start_args+=(--rebuild)
 fi
+if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
+  start_args+=(--enable-webhook)
+fi
 
 "$SCRIPT_DIR/start-agent.sh" "${start_args[@]}"
 sleep 2
@@ -88,8 +94,36 @@ if [[ "$RUN_NO_K8S" -eq 1 ]]; then
   "
 fi
 
-"$SCRIPT_DIR/generate-events.sh" --name "$VM_NAME"
+generate_args=(--name "$VM_NAME")
+if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
+  generate_args+=(--webhook)
+fi
+"$SCRIPT_DIR/generate-events.sh" "${generate_args[@]}"
 sleep 2
+
+if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
+  echo "[test] Running webhook smoke assertions..."
+  "$SCRIPT_DIR/vm-exec.sh" --name "$VM_NAME" --no-cd -- bash -lc "
+    set -euo pipefail
+    # Valid type must return 202
+    response=\$(curl -sf -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:9093/webhook/events \
+      -H 'Content-Type: application/json' \
+      -d '{\"type\":\"tls\",\"payload\":{},\"timestamp\":\"2000-01-01T00:00:00Z\"}')
+    if [[ \"\$response\" != '202' ]]; then
+      echo \"expected HTTP 202 from webhook, got \$response\"
+      exit 1
+    fi
+    # Unknown type must return 400
+    bad=\$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:9093/webhook/events \
+      -H 'Content-Type: application/json' \
+      -d '{\"type\":\"unknown_type\",\"payload\":{}}')
+    if [[ \"\$bad\" != '400' ]]; then
+      echo \"expected HTTP 400 for unknown type, got \$bad\"
+      exit 1
+    fi
+    echo 'webhook smoke: PASS'
+  "
+fi
 
 "$SCRIPT_DIR/check-state.sh" --name "$VM_NAME"
 echo

@@ -38,6 +38,10 @@ multipass exec "$VM_NAME" -- bash -lc "
   sudo grep -c 'file event sent' '$VM_LOG_FILE' || true
   echo -n 'capability events:  '
   sudo grep -c 'capability event sent' '$VM_LOG_FILE' || true
+  echo -n 'tls events:         '
+  sudo grep -c 'tls event' '$VM_LOG_FILE' || true
+  echo -n 'webhook events:     '
+  sudo grep -c 'webhook event received' '$VM_LOG_FILE' || true
   echo -n 'violations detected:'
   sudo grep -c 'CIS violation detected' '$VM_LOG_FILE' || true
 

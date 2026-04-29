@@ -41,6 +41,16 @@ multipass exec "$VM_NAME" -- bash -lc "
   curl -sf http://127.0.0.1:9091/health || echo 'health endpoint unavailable'
 
   echo
+  echo '=== Webhook (:9093) ==='
+  if curl -sf --max-time 1 -X POST http://127.0.0.1:9093/webhook/events \
+      -H 'Content-Type: application/json' \
+      -d '{"type":"tls","payload":{},"timestamp":"2000-01-01T00:00:00Z"}' >/dev/null 2>&1; then
+    echo 'webhook endpoint available'
+  else
+    echo 'webhook endpoint unavailable (disabled by default; start with --enable-webhook to activate)'
+  fi
+
+  echo
   echo '=== Key Metrics (/metrics) ==='
   curl -sf http://127.0.0.1:9090/metrics | grep -E '^elf_owl_(events_processed_total|violations_found_total|events_buffered|push_success_total|push_failure_total|enrichment_errors_total|rule_match_errors_total)' || echo 'metrics unavailable'
 

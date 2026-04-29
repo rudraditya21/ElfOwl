@@ -72,7 +72,8 @@ multipass exec "$VM_NAME" -- bash -lc "
 
 if [[ "$PULL" -eq 1 ]]; then
   echo "[ebpf-build] Pulling VM-built bytecode into local repository..."
-  for f in process network file capability dns; do
+  # tls added Apr 29 2026: TLS ClientHello monitor (sendmsg/write/writev, 2048-byte buffer)
+  for f in process network file capability dns tls; do
     multipass transfer "$VM_NAME:$VM_PROJECT_DIR/pkg/ebpf/programs/bin/${f}.o" "$PROJECT_ROOT/pkg/ebpf/programs/bin/${f}.o"
   done
   ls -l "$PROJECT_ROOT"/pkg/ebpf/programs/bin/*.o
