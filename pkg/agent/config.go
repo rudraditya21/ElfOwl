@@ -194,8 +194,11 @@ func LoadConfig() (*Config, error) {
 		os.ExpandEnv("$HOME/.config/elf-owl/elf-owl.yaml"),
 	}
 
-	var config *Config
-	var found bool
+	// ANCHOR: defaults-first config loading - Fix: zero-value fields for new config blocks - Apr 29, 2026
+	// Start from DefaultConfig() so any config block absent from the YAML file (e.g. webhook,
+	// added after the YAML was written) retains its default values instead of getting Go zero
+	// values. yaml.Unmarshal merges on top, so explicit YAML values always win.
+	config := DefaultConfig()
 
 	// Try to find and load config file
 	for _, path := range configPaths {
@@ -209,14 +212,8 @@ func LoadConfig() (*Config, error) {
 				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 			}
 
-			found = true
 			break
 		}
-	}
-
-	// If no config file found, use defaults
-	if !found {
-		config = DefaultConfig()
 	}
 
 	// Override with environment variables
