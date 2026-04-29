@@ -14,8 +14,8 @@ elf-owl detects CIS Kubernetes control violations from runtime activity and Kube
 
 - **cilium/ebpf monitors** for process, network, DNS, file, capability, and TLS events.
 - **JA3 fingerprinting** of outbound TLS ClientHellos via eBPF kernel capture (write/sendmsg/writev).
-- **Inbound webhook** for typed event ingestion from external systems (`POST /webhook/events`).
-- **Read-only design** with no enforcement or inbound control channel (webhook is ingest-only).
+- **Outbound webhook pusher** — batches all enriched events and POSTs them as JSON arrays to an external ingest listener (e.g. ClickHouse ingest program).
+- **Read-only design** with no enforcement or inbound control channel.
 - **Push-only evidence flow** to Owl API.
 - **Signed + encrypted evidence** with HMAC-SHA256 and AES-256-GCM.
 
@@ -36,13 +36,14 @@ cilium/ebpf Kernel Events (process / network / dns / file / capability / tls)
     -> Evidence Signing + Encryption
     -> Buffering + Retry
     -> Owl API Push
+    -> Outbound Webhook Pusher (batched JSON POST to external ingest listener)
 
-External Systems
-    -> POST /webhook/events  {"type": "tls|process|...", "payload": {...}}
-    -> same Enrichment -> Rule Engine -> Evidence pipeline
+External ClickHouse Ingest Program
+    <- POST /events  [{type, timestamp, cluster_id, kubernetes, process|network|..., violations}]
+    <- stores events in ClickHouse for analytics and alerting
 ```
 
-**Design invariant:** read-only and push-only. The webhook receives events; it never issues commands.
+**Design invariant:** read-only and push-only. elf-owl only emits data outward; it accepts no commands.
 
 ---
 
@@ -116,27 +117,26 @@ scripts/start-agent.sh --name elf-owl-dev --sync --rebuild --log-level debug \
 scripts/start-agent.sh --name elf-owl-dev --sync --rebuild --log-level debug --no-k8s
 ```
 
-**With inbound webhook enabled:**
+**With outbound webhook pusher enabled:**
 
 ```bash
-scripts/start-agent.sh --name elf-owl-dev --no-k8s --rebuild --enable-webhook
-# prints: Webhook: POST http://<vm-ip>:9093/webhook/events
+# Start a listener in the VM first (see Testing the Webhook section below)
+scripts/start-agent.sh --name elf-owl-dev --no-k8s --rebuild \
+  --enable-webhook --webhook-url http://127.0.0.1:8888/events
+# prints: Webhook pusher: pushing all enriched events to http://127.0.0.1:8888/events
 ```
 
 ### 4. Generate events
 
 ```bash
-# eBPF events only (process, file, network, dns, capability, tls)
+# Trigger process, file, network, dns, capability, and tls activity
 scripts/generate-events.sh --name elf-owl-dev
-
-# eBPF events + a typed webhook test POST
-scripts/generate-events.sh --name elf-owl-dev --webhook
 ```
 
 ### 5. Validate
 
 ```bash
-scripts/check-state.sh   --name elf-owl-dev    # health + metrics + webhook probe
+scripts/check-state.sh   --name elf-owl-dev    # health + metrics + webhook push status
 scripts/event-summary.sh --name elf-owl-dev    # event counts per type
 scripts/check-event-values.sh --name elf-owl-dev --lines 5
 ```
@@ -147,7 +147,7 @@ scripts/check-event-values.sh --name elf-owl-dev --lines 5
 # With K8s
 scripts/test-live-events.sh --name elf-owl-dev --sync --rebuild --sample-lines 5
 
-# No-K8s + webhook smoke test
+# No-K8s + webhook push smoke test
 scripts/test-live-events.sh --name elf-owl-dev --sync --rebuild \
   --without-k8s --enable-webhook --sample-lines 5
 ```
@@ -216,7 +216,6 @@ kubectl apply -k deploy/kustomize/overlays/with-rules
 |---|---|---|
 | `GET /health` | `:9091` | Liveness / readiness probe |
 | `GET /metrics` | `:9090` | Prometheus scrape |
-| `POST /webhook/events` | `:9093` | Typed event ingest (disabled by default) |
 
 ```bash
 # Health
@@ -224,19 +223,45 @@ curl -sf http://127.0.0.1:9091/health
 
 # Metrics
 curl -sf http://127.0.0.1:9090/metrics | grep '^elf_owl_' | head
-
-# Webhook — send a typed TLS event
-curl -X POST http://127.0.0.1:9093/webhook/events \
-  -H 'Content-Type: application/json' \
-  -d '{"type":"tls","payload":{},"timestamp":"2026-04-29T12:00:00Z"}'
-# -> {"accepted":true,"type":"tls"}
 ```
 
-### Webhook event types
+### Outbound Webhook Pusher
 
-`process` · `network` · `dns` · `file` · `capability` · `tls`
+elf-owl can push all enriched events to an external HTTP ingest listener. Your listener receives batches of `WebhookEvent` JSON records:
 
-The `type` field routes the payload to the matching enricher and through the same rule engine + evidence pipeline as eBPF-captured events.
+```json
+[
+  {
+    "type": "tls",
+    "timestamp": "2026-04-29T12:00:00Z",
+    "cluster_id": "prod-us-east-1",
+    "node_name": "node-1",
+    "kubernetes": { "pod_name": "...", "namespace": "...", ... },
+    "tls": { "ja3": "...", "sni": "example.com", ... },
+    "violations": [{ "control_id": "CIS_4.2.6", "severity": "HIGH", ... }]
+  }
+]
+```
+
+**Enable via environment (no YAML edit needed):**
+
+```bash
+export OWL_WEBHOOK_ENABLED=true
+export OWL_WEBHOOK_TARGET_URL=http://my-ingest-host:8888/events
+```
+
+**Payload field availability by event type:**
+
+| `type` | Populated context fields |
+|---|---|
+| `process` | `process`, `kubernetes`, `container` |
+| `network` | `network`, `kubernetes`, `container` |
+| `dns` | `dns`, `kubernetes`, `container` |
+| `file` | `file`, `kubernetes`, `container` |
+| `capability` | `capability`, `kubernetes`, `container` |
+| `tls` | `tls`, `kubernetes`, `container` |
+
+All types include `violations` when CIS rules matched.
 
 ---
 
@@ -261,7 +286,8 @@ Search order at runtime:
 | `OWL_K8S_IN_CLUSTER` | `false` for out-of-cluster kubeconfig mode |
 | `OWL_KUBERNETES_ONLY` | Discard events with no pod context (default `true`) |
 | `OWL_KUBERNETES_METADATA` | Disable K8s client entirely (default `true`) |
-| `OWL_WEBHOOK_ENABLED` | Enable webhook listener on `:9093` (default `false`) |
+| `OWL_WEBHOOK_ENABLED` | Enable outbound webhook pusher (default `false`) |
+| `OWL_WEBHOOK_TARGET_URL` | Target URL for outbound event push (required when enabled) |
 | `ELF_OWL_SIGNING_KEY` | HMAC-SHA256 signing key |
 | `ELF_OWL_ENCRYPTION_KEY` | AES-256-GCM encryption key |
 | `KUBECONFIG` | Path to kubeconfig (out-of-cluster mode) |
@@ -279,6 +305,7 @@ export OWL_KUBERNETES_ONLY=false
 
 ```bash
 export OWL_WEBHOOK_ENABLED=true
+export OWL_WEBHOOK_TARGET_URL=http://ingest-host:8888/events
 ```
 
 ### Webhook config block (`config/elf-owl.yaml`)
@@ -286,10 +313,13 @@ export OWL_WEBHOOK_ENABLED=true
 ```yaml
 agent:
   webhook:
-    enabled: false          # set true or use OWL_WEBHOOK_ENABLED=true
-    listen_address: ":9093"
-    path: "/webhook/events"
-    max_payload_bytes: 1048576  # 1 MiB
+    enabled: false
+    target_url: ""                # Required when enabled
+    batch_size: 100               # Max events per POST body
+    flush_interval: 5s            # Flush timer
+    timeout: 10s                  # HTTP client timeout per POST
+    # headers:
+    #   Authorization: "Bearer <token>"
 ```
 
 ---
@@ -304,10 +334,10 @@ All scripts live in `scripts/` and target a Multipass VM named `elf-owl-dev` by 
 | `setup-k8s-vm.sh` | Install k3s in VM and extract kubeconfig |
 | `sync-vm-src.sh` | Archive + transfer local source into VM |
 | `build-ebpf-vm.sh` | Compile eBPF C programs in VM; `--pull` copies `.o` files back |
-| `start-agent.sh` | Build (optional) + start agent; supports `--no-k8s`, `--enable-webhook` |
+| `start-agent.sh` | Build (optional) + start agent; supports `--no-k8s`, `--enable-webhook`, `--webhook-url` |
 | `stop-agent.sh` | Stop running agent process |
-| `generate-events.sh` | Trigger process/file/network/dns/capability/tls activity; `--webhook` sends a typed POST |
-| `check-state.sh` | Health + metrics + webhook probe |
+| `generate-events.sh` | Trigger process/file/network/dns/capability/tls activity |
+| `check-state.sh` | Health + metrics + outbound webhook push status |
 | `check-logs.sh` | Filter agent logs by category |
 | `event-summary.sh` | Count events per type from log |
 | `check-event-values.sh` | Sample log lines per event type |
@@ -382,10 +412,19 @@ scripts/check-logs.sh --name elf-owl-dev --type startup --lines 120
 - Ensure `OWL_KUBERNETES_METADATA=false` and `OWL_KUBERNETES_ONLY=false`.
 - Confirm startup log contains `running without Kubernetes client`.
 
-### Webhook returns 404 or connection refused
+### Webhook pusher not sending events
 
-- The webhook is disabled by default. Start agent with `--enable-webhook` or set `OWL_WEBHOOK_ENABLED=true`.
-- Default port is `:9093`. Confirm no firewall rule is blocking it inside the VM.
+- Confirm `OWL_WEBHOOK_ENABLED=true` and `OWL_WEBHOOK_TARGET_URL` is set (non-empty).
+- A missing `target_url` is caught at startup with: `webhook.enabled=true requires webhook.target_url to be set`.
+- Check the agent log for `webhook pusher started` at startup, and `webhook batch pushed` at debug level.
+- If you see `webhook push failed`, the listener is unreachable — verify the target host/port is up.
+
+### Webhook batches not arriving at listener
+
+- Verify the listener is bound before the agent starts (agent won't buffer across listener restarts).
+- Default `flush_interval` is 5 s — wait at least one interval after generating events.
+- Use `--log-level debug` and grep for `webhook batch pushed` in the agent log.
+- Confirm the listener returns HTTP 2xx; a 4xx/5xx causes a warning log but events are dropped.
 
 ### TLS events not appearing
 
@@ -393,10 +432,6 @@ scripts/check-logs.sh --name elf-owl-dev --type startup --lines 120
 - Use `--log-level debug` and check for `tls event read` or `tls ja3 parsed` log lines.
 - TLS capture requires outbound HTTPS traffic. Run `scripts/generate-events.sh` which calls `curl -sk https://example.com`.
 - If `tls.o` is missing, rebuild: `scripts/build-ebpf-vm.sh --sync --pull`.
-
-### Webhook event type rejected (400)
-
-Accepted types are: `process`, `network`, `dns`, `file`, `capability`, `tls`. Any other value returns HTTP 400.
 
 ---
 
