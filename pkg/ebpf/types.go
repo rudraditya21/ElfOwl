@@ -14,6 +14,7 @@ const (
 	FileProgramName       = "file"
 	CapabilityProgramName = "capability"
 	DNSProgramName        = "dns"
+	TLSProgramName        = "tls"
 )
 
 // ============================================================================
@@ -26,6 +27,7 @@ const (
 	FileEventsMap       = "file_events"
 	CapabilityEventsMap = "capability_events"
 	DNSEventsMap        = "dns_events"
+	TLSEventsMap        = "tls_events"
 )
 
 // ============================================================================
@@ -57,7 +59,7 @@ type NetworkEvent struct {
 	DAddr     uint32 // IPv4 only
 	SAddrV6   [16]byte
 	DAddrV6   [16]byte
-	Protocol  uint8  // IPPROTO_TCP=6 or IPPROTO_UDP=17
+	Protocol  uint8 // IPPROTO_TCP=6 or IPPROTO_UDP=17
 	Direction uint8
 	State     uint8
 	NetNS     uint32
@@ -111,6 +113,25 @@ type DNSEvent struct {
 	CgroupID     uint64
 	QueryName    [256]byte // Domain name
 	Server       [16]byte  // DNS server IP
+}
+
+// ============================================================================
+// TLS Event Structure (matches eBPF struct tls_event)
+// ============================================================================
+
+// TLSClientHelloEvent carries the first bytes of an outbound TLS ClientHello.
+type TLSClientHelloEvent struct {
+	PID       uint32
+	Family    uint16
+	Protocol  uint8
+	Direction uint8
+	SrcPort   uint16
+	DstPort   uint16
+	CgroupID  uint64
+	// ANCHOR: TLS buffer size increase - Fix: truncated extensions - Apr 26, 2026
+	// 1024 bytes matches vaanvil; covers real-world ClientHellos including large key_share extensions.
+	Length    uint32
+	Metadata  [1024]byte
 }
 
 // ============================================================================

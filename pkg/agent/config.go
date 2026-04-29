@@ -54,6 +54,7 @@ type EBPFConfig struct {
 	DNS           EBPFMonitorConfig `yaml:"dns"`
 	File          EBPFMonitorConfig `yaml:"file"`
 	Capability    EBPFMonitorConfig `yaml:"capability"`
+	TLS           EBPFMonitorConfig `yaml:"tls"`
 	PerfBuffer    PerfBufferConfig  `yaml:"perf_buffer"`
 	RingBuffer    RingBufferConfig  `yaml:"ring_buffer"`
 }
@@ -332,6 +333,11 @@ func DefaultConfig() *Config {
 					Timeout:    5 * time.Second,
 				},
 				Capability: EBPFMonitorConfig{
+					Enabled:    true,
+					BufferSize: 4096,
+					Timeout:    5 * time.Second,
+				},
+				TLS: EBPFMonitorConfig{
 					Enabled:    true,
 					BufferSize: 4096,
 					Timeout:    5 * time.Second,

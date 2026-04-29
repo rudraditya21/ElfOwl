@@ -35,4 +35,5 @@ var ListPrograms = []string{
 	FileProgramName,
 	CapabilityProgramName,
 	DNSProgramName,
+	TLSProgramName,
 }

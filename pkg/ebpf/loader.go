@@ -91,6 +91,7 @@ type LoadOptions struct {
 	File          ProgramConfig
 	Capability    ProgramConfig
 	DNS           ProgramConfig
+	TLS           ProgramConfig
 	PerfBuffer    PerfBufferOptions
 	RingBuffer    RingBufferOptions
 	KernelBTFPath string
@@ -118,6 +119,9 @@ type Collection struct {
 	// DNS monitors DNS queries and responses
 	DNS *ProgramSet
 
+	// TLS monitors outbound TLS ClientHello metadata
+	TLS *ProgramSet
+
 	// Logger for diagnostics
 	Logger *zap.Logger
 
@@ -142,6 +146,7 @@ func DefaultLoadOptions() LoadOptions {
 		File:       ProgramConfig{Enabled: true},
 		Capability: ProgramConfig{Enabled: true},
 		DNS:        ProgramConfig{Enabled: true},
+		TLS:        ProgramConfig{Enabled: true},
 		PerfBuffer: PerfBufferOptions{Enabled: true, PageCount: 64, LostHandler: true},
 		RingBuffer: RingBufferOptions{Enabled: false, Size: 65536},
 	}
@@ -189,6 +194,14 @@ func programDefinitions(opts LoadOptions) []programDefinition {
 			TracepointGroup: "syscalls",
 			TracepointName:  "sys_enter_sendto",
 			Config:          opts.DNS,
+		},
+		{
+			Name:            TLSProgramName,
+			Description:     "tls client hello capture",
+			MapName:         TLSEventsMap,
+			TracepointGroup: "syscalls",
+			TracepointName:  "sys_enter_write",
+			Config:          opts.TLS,
 		},
 	}
 }
@@ -592,6 +605,8 @@ func LoadProgramsWithOptions(logger *zap.Logger, opts LoadOptions) (*Collection,
 			coll.Capability = programSet
 		case DNSProgramName:
 			coll.DNS = programSet
+		case TLSProgramName:
+			coll.TLS = programSet
 		}
 	}
 

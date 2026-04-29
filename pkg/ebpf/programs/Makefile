@@ -12,7 +12,7 @@ BPF_INCLUDE ?= /usr/include/bpf
 CFLAGS := -O2 -g -target bpf -D__TARGET_ARCH_$(TARGET_ARCH) -I$(ARCH_INCLUDE) -I$(BPF_INCLUDE) -I.
 
 TARGETS := $(OUTPUT)/process.o $(OUTPUT)/network.o $(OUTPUT)/file.o \
-	$(OUTPUT)/capability.o $(OUTPUT)/dns.o
+	$(OUTPUT)/capability.o $(OUTPUT)/dns.o $(OUTPUT)/tls.o
 
 .PHONY: all clean vmlinux
 

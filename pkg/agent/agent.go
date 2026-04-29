@@ -41,6 +41,7 @@ type EnrichmentProvider interface {
 	EnrichDNSEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
 	EnrichFileEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
 	EnrichCapabilityEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
+	EnrichTLSEvent(ctx context.Context, rawEvent interface{}) (*enrichment.EnrichedEvent, error)
 }
 
 // MetricsRecorder defines metrics methods used by the agent.
@@ -62,6 +63,7 @@ type Agent struct {
 	ProcessMonitor    *ebpf.ProcessMonitor
 	NetworkMonitor    *ebpf.NetworkMonitor
 	DNSMonitor        *ebpf.DNSMonitor
+	TLSMonitor        *ebpf.TLSMonitor
 	FileMonitor       *ebpf.FileMonitor
 	CapabilityMonitor *ebpf.CapabilityMonitor
 
@@ -114,11 +116,11 @@ func NewAgent(config *Config) (*Agent, error) {
 	}
 
 	agent := &Agent{
-		Config:          config,
-		Logger:          zapLogger,
-		done:            make(chan struct{}),
-		MetricsRegistry: metrics.NewRegistry(),
-		startTime:       time.Now(),
+		Config:             config,
+		Logger:             zapLogger,
+		done:               make(chan struct{}),
+		MetricsRegistry:    metrics.NewRegistry(),
+		startTime:          time.Now(),
 		ruleReloadInterval: ruleReloadInterval,
 		ruleReloadTimeout:  ruleReloadTimeout,
 	}
@@ -286,6 +288,11 @@ func (a *Agent) Start(ctx context.Context) error {
 				BufferSize: a.Config.Agent.EBPF.DNS.BufferSize,
 				Timeout:    a.Config.Agent.EBPF.DNS.Timeout,
 			},
+			TLS: ebpf.ProgramConfig{
+				Enabled:    a.Config.Agent.EBPF.TLS.Enabled,
+				BufferSize: a.Config.Agent.EBPF.TLS.BufferSize,
+				Timeout:    a.Config.Agent.EBPF.TLS.Timeout,
+			},
 			PerfBuffer: ebpf.PerfBufferOptions{
 				Enabled:     a.Config.Agent.EBPF.PerfBuffer.Enabled,
 				PageCount:   a.Config.Agent.EBPF.PerfBuffer.PageCount,
@@ -317,6 +324,9 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 		if a.Config.Agent.EBPF.Capability.Enabled && collection.Capability != nil {
 			a.CapabilityMonitor = ebpf.NewCapabilityMonitor(collection.Capability, a.Logger)
+		}
+		if a.Config.Agent.EBPF.TLS.Enabled && collection.TLS != nil {
+			a.TLSMonitor = ebpf.NewTLSMonitor(collection.TLS, a.Logger)
 		}
 	}
 
@@ -356,6 +366,12 @@ func (a *Agent) Start(ctx context.Context) error {
 		}
 		a.Logger.Info("capability monitor started")
 	}
+	if a.TLSMonitor != nil {
+		if err := a.TLSMonitor.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start tls monitor: %w", err)
+		}
+		a.Logger.Info("tls monitor started")
+	}
 
 	// Launch event handlers for each cilium/ebpf monitor
 	go a.handleProcessEvents(ctx)
@@ -363,6 +379,7 @@ func (a *Agent) Start(ctx context.Context) error {
 	go a.handleDNSEvents(ctx)
 	go a.handleFileEvents(ctx)
 	go a.handleCapabilityEvents(ctx)
+	go a.handleTLSEvents(ctx)
 
 	// ANCHOR: Start K8s compliance watchers - Feature: pod_spec_check/network_policy_check - Mar 22, 2026
 	// Watches K8s API objects and emits compliance events for rules that are not
@@ -554,6 +571,19 @@ func (a *Agent) handleCapabilityEvent(ctx context.Context, rawEnriched *enrichme
 	)
 }
 
+func (a *Agent) handleTLSEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	a.handleRuntimeEvent(
+		ctx,
+		rawEnriched,
+		a.Enricher.EnrichTLSEvent,
+		"discarded tls event: no context",
+		"processing tls event",
+		"discarded tls event: enrichment failed",
+		"tls event enrichment failed, using partial event",
+		false,
+	)
+}
+
 // handleProcessEvents handles cilium/ebpf process monitor events
 func (a *Agent) handleProcessEvents(ctx context.Context) {
 	if a.ProcessMonitor == nil {
@@ -655,6 +685,23 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 		case <-a.done:
 			return
 
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (a *Agent) handleTLSEvents(ctx context.Context) {
+	if a.TLSMonitor == nil {
+		return
+	}
+	eventChan := a.TLSMonitor.EventChan()
+	for {
+		select {
+		case rawEnriched := <-eventChan:
+			a.handleTLSEvent(ctx, rawEnriched)
+		case <-a.done:
+			return
 		case <-ctx.Done():
 			return
 		}

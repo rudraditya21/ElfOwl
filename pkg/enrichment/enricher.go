@@ -6,6 +6,8 @@ package enrichment
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -213,6 +215,188 @@ func fieldStringValue(v reflect.Value, name string) string {
 	default:
 		return ""
 	}
+}
+
+func fieldBytesValue(v reflect.Value, name string) []byte {
+	f := v.FieldByName(name)
+	if !f.IsValid() {
+		return nil
+	}
+	switch f.Kind() {
+	case reflect.Array, reflect.Slice:
+		b := make([]byte, f.Len())
+		for i := 0; i < f.Len(); i++ {
+			elem := f.Index(i)
+			if elem.Kind() == reflect.Uint8 {
+				b[i] = byte(elem.Uint())
+			}
+		}
+		return b
+	default:
+		return nil
+	}
+}
+
+type tlsJA3Meta struct {
+	TLSVersion     string
+	Ciphers        []uint16
+	Extensions     []uint16
+	Curves         []uint16
+	PointFormats   []uint8
+	JA3String      string
+	JA3Fingerprint string
+}
+
+func parseJA3MetadataBytes(b []byte) (*tlsJA3Meta, error) {
+	meta, err := parseTLSClientHelloBytes(b)
+	if err != nil {
+		return nil, err
+	}
+	sum := md5.Sum([]byte(meta.JA3String))
+	meta.JA3Fingerprint = hex.EncodeToString(sum[:])
+	return meta, nil
+}
+
+func isGREASEValue(v uint16) bool {
+	return v&0x0f0f == 0x0a0a && byte(v>>8) == byte(v)
+}
+
+func parseTLSClientHelloBytes(b []byte) (*tlsJA3Meta, error) {
+	if len(b) < 5 {
+		return nil, fmt.Errorf("tls buffer too short")
+	}
+	if b[0] == 0x16 && len(b) >= 9 && b[5] == 0x01 {
+		hlen := int(b[6])<<16 | int(b[7])<<8 | int(b[8])
+		end := 9 + hlen
+		if end > len(b) {
+			end = len(b)
+		}
+		b = b[5:end]
+	}
+	if len(b) < 42 || b[0] != 0x01 {
+		return nil, fmt.Errorf("not a clienthello")
+	}
+	off := 4
+	if off+2 > len(b) {
+		return nil, fmt.Errorf("missing version")
+	}
+	ver := fmt.Sprintf("%d", uint16(b[off])<<8|uint16(b[off+1]))
+	off += 2 + 32
+	if off >= len(b) {
+		return nil, fmt.Errorf("missing session id")
+	}
+	sidLen := int(b[off])
+	off++
+	if off+sidLen > len(b) {
+		return nil, fmt.Errorf("truncated session id")
+	}
+	off += sidLen
+	if off+2 > len(b) {
+		return nil, fmt.Errorf("missing ciphers")
+	}
+	cipherLen := int(b[off])<<8 | int(b[off+1])
+	off += 2
+	// ANCHOR: Graceful cipher truncation - Fix: non-ClientHello / short captures - Apr 26, 2026
+	if available := len(b) - off; cipherLen > available {
+		cipherLen = available &^ 1 // round down to even
+	}
+	var ciphers []uint16
+	for i := 0; i < cipherLen; i += 2 {
+		c := uint16(b[off+i])<<8 | uint16(b[off+i+1])
+		if !isGREASEValue(c) {
+			ciphers = append(ciphers, c)
+		}
+	}
+	off += cipherLen
+	if off >= len(b) {
+		return &tlsJA3Meta{TLSVersion: ver, Ciphers: ciphers, JA3String: buildJA3String(ver, ciphers, nil, nil, nil)}, nil
+	}
+	compLen := int(b[off])
+	off++
+	if off+compLen > len(b) {
+		return nil, fmt.Errorf("truncated compression methods")
+	}
+	off += compLen
+	if off+2 > len(b) {
+		return &tlsJA3Meta{TLSVersion: ver, Ciphers: ciphers, JA3String: buildJA3String(ver, ciphers, nil, nil, nil)}, nil
+	}
+	extLen := int(b[off])<<8 | int(b[off+1])
+	off += 2
+	// ANCHOR: Graceful truncation for extensions - Fix: ClientHellos > capture buffer - Apr 26, 2026
+	// Clamp extLen to available bytes and parse what we have, matching vaanvil behaviour.
+	if available := len(b) - off; extLen > available {
+		extLen = available
+	}
+	end := off + extLen
+	var exts, curves []uint16
+	var points []uint8
+	for off+4 <= end {
+		et := uint16(b[off])<<8 | uint16(b[off+1])
+		el := int(b[off+2])<<8 | int(b[off+3])
+		off += 4
+		if off+el > end {
+			break // truncated extension — stop but keep what we parsed
+		}
+		if isGREASEValue(et) {
+			off += el
+			continue
+		}
+		exts = append(exts, et)
+		switch et {
+		case 0x000a:
+			if el >= 2 {
+				ll := int(b[off])<<8 | int(b[off+1])
+				for i := 0; i+1 < ll && 2+i+1 < el; i += 2 {
+					c := uint16(b[off+2+i])<<8 | uint16(b[off+2+i+1])
+					if !isGREASEValue(c) {
+						curves = append(curves, c)
+					}
+				}
+			}
+		case 0x000b:
+			if el >= 1 {
+				ll := int(b[off])
+				for i := 0; i < ll && 1+i < el; i++ {
+					points = append(points, b[off+1+i])
+				}
+			}
+		}
+		off += el
+	}
+	return &tlsJA3Meta{
+		TLSVersion:   ver,
+		Ciphers:      ciphers,
+		Extensions:   exts,
+		Curves:       curves,
+		PointFormats: points,
+		JA3String:    buildJA3String(ver, ciphers, exts, curves, points),
+	}, nil
+}
+
+func buildJA3String(version string, ciphers, exts, curves []uint16, points []uint8) string {
+	return fmt.Sprintf("%s,%s,%s,%s,%s", version, joinUint16s(ciphers), joinUint16s(exts), joinUint16s(curves), joinUint8s(points))
+}
+
+func joinUint16s(v []uint16) string {
+	if len(v) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(v))
+	for _, n := range v {
+		out = append(out, fmt.Sprintf("%d", n))
+	}
+	return strings.Join(out, "-")
+}
+
+func joinUint8s(v []uint8) string {
+	if len(v) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(v))
+	for _, n := range v {
+		out = append(out, fmt.Sprintf("%d", n))
+	}
+	return strings.Join(out, "-")
 }
 
 func ipFromUint32(addr uint32) string {
@@ -1161,6 +1345,48 @@ func (e *Enricher) EnrichDNSEvent(
 	}
 
 	return enriched, nil
+}
+
+// EnrichTLSEvent enriches a TLS ClientHello event and computes JA3 metadata.
+func (e *Enricher) EnrichTLSEvent(
+	ctx context.Context,
+	rawEvent interface{},
+) (*EnrichedEvent, error) {
+	if rawEvent == nil {
+		return nil, fmt.Errorf("nil tls event")
+	}
+
+	v, err := resolveEventValue(rawEvent)
+	if err != nil {
+		return nil, err
+	}
+
+	meta := fieldBytesValue(v, "Metadata")
+	if len(meta) == 0 {
+		return nil, fmt.Errorf("empty tls metadata")
+	}
+
+	ja3Meta, err := parseJA3MetadataBytes(meta)
+	if err != nil {
+		return nil, err
+	}
+
+	tlsCtx := &TLSContext{
+		JA3Fingerprint: ja3Meta.JA3Fingerprint,
+		JA3String:      ja3Meta.JA3String,
+		TLSVersion:     ja3Meta.TLSVersion,
+		Ciphers:        append([]uint16(nil), ja3Meta.Ciphers...),
+		Extensions:     append([]uint16(nil), ja3Meta.Extensions...),
+		Curves:         append([]uint16(nil), ja3Meta.Curves...),
+		PointFormats:   append([]uint8(nil), ja3Meta.PointFormats...),
+	}
+
+	return &EnrichedEvent{
+		RawEvent:  rawEvent,
+		EventType: "tls_client_hello",
+		TLS:       tlsCtx,
+		Timestamp: time.Now(),
+	}, nil
 }
 
 // EnrichFileEvent enriches a cilium/ebpf file event
