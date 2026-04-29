@@ -80,6 +80,10 @@ type Agent struct {
 	ruleReloadInterval time.Duration
 	ruleReloadTimeout  time.Duration
 
+	// ANCHOR: Outbound webhook pusher field - Feature: ClickHouse event push - Apr 29, 2026
+	// Nil when webhook.enabled=false; Send() is only called when non-nil.
+	WebhookPusher *WebhookPusher
+
 	// Metrics
 	MetricsRegistry MetricsRecorder
 
@@ -249,6 +253,20 @@ func NewAgent(config *Config) (*Agent, error) {
 		zap.String("endpoint", config.Agent.OWL.Endpoint),
 	)
 
+	// ANCHOR: Outbound webhook pusher init - Feature: ClickHouse event push - Apr 29, 2026
+	// Created here so the pusher is ready before Start() launches the flush goroutine.
+	if config.Agent.Webhook.Enabled {
+		agent.WebhookPusher = NewWebhookPusher(
+			config.Agent.Webhook,
+			config.Agent.ClusterID,
+			config.Agent.NodeName,
+			zapLogger,
+		)
+		agent.Logger.Info("webhook pusher initialized",
+			zap.String("target", config.Agent.Webhook.TargetURL),
+		)
+	}
+
 	return agent, nil
 }
 
@@ -395,6 +413,14 @@ func (a *Agent) Start(ctx context.Context) error {
 		go a.pushEvents(ctx)
 	}
 
+	// ANCHOR: Start outbound webhook pusher - Feature: ClickHouse event push - Apr 29, 2026
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Start(ctx)
+		a.Logger.Info("webhook pusher started",
+			zap.String("target", a.Config.Agent.Webhook.TargetURL),
+		)
+	}
+
 	// Launch periodic metrics collector
 	go a.collectMetrics(ctx)
 
@@ -476,6 +502,10 @@ func (a *Agent) handleRuntimeEvent(
 
 	// Queue for evidence processing
 	a.EventBuffer.Enqueue(enrichedEvent, violations)
+	// ANCHOR: Forward to outbound webhook pusher - Feature: ClickHouse event push - Apr 29, 2026
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Send(enrichedEvent, violations)
+	}
 	a.metricsMutex.Lock()
 	a.eventsProcessed++
 	a.metricsMutex.Unlock()
@@ -729,6 +759,9 @@ func (a *Agent) handleComplianceEvent(ctx context.Context, event *enrichment.Enr
 	}
 
 	a.EventBuffer.Enqueue(event, violations)
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Send(event, violations)
+	}
 	a.metricsMutex.Lock()
 	a.eventsProcessed++
 	a.metricsMutex.Unlock()
@@ -967,6 +1000,12 @@ func (a *Agent) Stop() error {
 			a.Logger.Error("failed to close tls monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
+	}
+
+	// ANCHOR: Webhook pusher shutdown - Feature: ClickHouse event push - Apr 29, 2026
+	// Stop() drains the internal channel and flushes any remaining events before returning.
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Stop()
 	}
 
 	if len(errs) > 0 {

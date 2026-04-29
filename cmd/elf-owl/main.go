@@ -129,24 +129,6 @@ func main() {
 		}()
 	}
 
-	// ANCHOR: Webhook HTTP server startup - Feature: typed event ingestion endpoint - Apr 29, 2026
-	// Separate listener on :9093 so webhook traffic never contends with health probes.
-	// Disabled by default; enable with webhook.enabled: true in elf-owl.yaml.
-	if config.Agent.Webhook.Enabled {
-		webhookAddr := config.Agent.Webhook.ListenAddress
-		webhookPath := config.Agent.Webhook.Path
-
-		webhookMux := http.NewServeMux()
-		webhookMux.Handle(webhookPath, agentInstance.WebhookHandler())
-
-		go func() {
-			zapLogger.Info("webhook server listening", zap.String("addr", webhookAddr+webhookPath))
-			if err := http.ListenAndServe(webhookAddr, webhookMux); err != nil && err != http.ErrServerClosed {
-				zapLogger.Error("webhook server error", zap.Error(err))
-			}
-		}()
-	}
-
 	// Wait for shutdown signal
 	sig := <-sigChan
 	zapLogger.Info("shutdown signal received",
