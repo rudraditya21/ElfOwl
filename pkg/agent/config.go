@@ -175,14 +175,17 @@ type HealthConfig struct {
 	Path          string `yaml:"path"`
 }
 
-// ANCHOR: Webhook config - Feature: typed event ingestion endpoint - Apr 29, 2026
-// Disabled by default; enable with webhook.enabled: true in elf-owl.yaml.
-// Exposes POST /webhook/events accepting a typed JSON envelope {type, payload, timestamp}.
+// ANCHOR: Webhook config - Feature: outbound ClickHouse event push - Apr 29, 2026
+// Disabled by default; enable with webhook.enabled: true (or OWL_WEBHOOK_ENABLED=true).
+// When enabled, all enriched events from every eBPF monitor are batched and POSTed as a
+// JSON array to target_url so an external ingest program can store them in ClickHouse.
 type WebhookConfig struct {
-	Enabled         bool   `yaml:"enabled"`
-	ListenAddress   string `yaml:"listen_address"`
-	Path            string `yaml:"path"`
-	MaxPayloadBytes int64  `yaml:"max_payload_bytes"`
+	Enabled       bool              `yaml:"enabled"`
+	TargetURL     string            `yaml:"target_url"`
+	BatchSize     int               `yaml:"batch_size"`
+	FlushInterval time.Duration     `yaml:"flush_interval"`
+	Timeout       time.Duration     `yaml:"timeout"`
+	Headers       map[string]string `yaml:"headers"`
 }
 
 // LoadConfig loads configuration from YAML and environment variables
@@ -260,12 +263,16 @@ func (c *Config) applyEnvironmentOverrides() {
 		}
 	}
 
-	// ANCHOR: webhook enabled env override - Feature: typed event ingestion endpoint - Apr 29, 2026
-	// Allows start-agent.sh and CI scripts to enable the webhook without editing the YAML config.
+	// ANCHOR: webhook env overrides - Feature: outbound ClickHouse event push - Apr 29, 2026
+	// Allows start-agent.sh and CI scripts to enable pushing and set the target URL
+	// without editing the YAML config.
 	if v := os.Getenv("OWL_WEBHOOK_ENABLED"); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			c.Agent.Webhook.Enabled = parsed
 		}
+	}
+	if v := os.Getenv("OWL_WEBHOOK_TARGET_URL"); v != "" {
+		c.Agent.Webhook.TargetURL = v
 	}
 
 	// ANCHOR: kubernetes_metadata env override - Feature: no-k8s runtime mode - Mar 28, 2026
@@ -297,6 +304,12 @@ func (c *Config) Validate() error {
 
 	if c.Agent.OWL.Auth.TokenPath == "" {
 		c.Agent.OWL.Auth.TokenPath = "/var/run/secrets/owl-jwt-token"
+	}
+
+	// ANCHOR: Webhook target URL guard - Feature: outbound ClickHouse event push - Apr 29, 2026
+	// An enabled outbound pusher with no target URL would silently drop all events.
+	if c.Agent.Webhook.Enabled && c.Agent.Webhook.TargetURL == "" {
+		return fmt.Errorf("webhook.enabled=true requires webhook.target_url to be set (or OWL_WEBHOOK_TARGET_URL)")
 	}
 
 	// ANCHOR: Config guard kubernetes_metadata+kubernetes_only - Fix PR-23 HIGH - Mar 25, 2026
@@ -438,10 +451,11 @@ func DefaultConfig() *Config {
 				Path:          "/health",
 			},
 			Webhook: WebhookConfig{
-				Enabled:         false,
-				ListenAddress:   ":9093",
-				Path:            "/webhook/events",
-				MaxPayloadBytes: 1048576, // 1 MiB
+				Enabled:       false,
+				TargetURL:     "",
+				BatchSize:     100,
+				FlushInterval: 5 * time.Second,
+				Timeout:       10 * time.Second,
 			},
 		},
 	}
