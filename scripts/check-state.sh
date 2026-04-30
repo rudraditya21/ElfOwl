@@ -41,6 +41,17 @@ multipass exec "$VM_NAME" -- bash -lc "
   curl -sf http://127.0.0.1:9091/health || echo 'health endpoint unavailable'
 
   echo
+  echo '=== Webhook Pusher (outbound) ==='
+  if sudo grep -q 'webhook pusher started' '$VM_LOG_FILE' 2>/dev/null; then
+    target="$(sudo grep 'webhook pusher started' '$VM_LOG_FILE' | tail -1 | grep -oP '(?<="target":")[^"]+' || true)"
+    echo "enabled — pushing to ${target:-<configured target>}"
+    pushes="$(sudo grep -c 'webhook batch pushed' '$VM_LOG_FILE' 2>/dev/null || echo 0)"
+    echo "batches pushed so far: ${pushes}"
+  else
+    echo 'disabled (start with --enable-webhook --webhook-url <url> to activate)'
+  fi
+
+  echo
   echo '=== Key Metrics (/metrics) ==='
   curl -sf http://127.0.0.1:9090/metrics | grep -E '^elf_owl_(events_processed_total|violations_found_total|events_buffered|push_success_total|push_failure_total|enrichment_errors_total|rule_match_errors_total)' || echo 'metrics unavailable'
 

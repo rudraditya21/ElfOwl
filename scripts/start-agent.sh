@@ -12,6 +12,8 @@ NO_K8S=0
 VM_LOG_FILE="/var/log/elf-owl/agent.log"
 VM_PID_FILE="/var/run/elf-owl/agent.pid"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENABLE_WEBHOOK=0
+WEBHOOK_TARGET_URL=""
 
 usage() {
   cat <<USAGE
@@ -23,6 +25,8 @@ Options:
   --log-level <level>       debug|info|warn|error (default: ${LOG_LEVEL})
   --kubeconfig <vm-path>    KUBECONFIG path inside VM (required outside cluster)
   --no-k8s                  Run without Kubernetes client/metadata (host-only mode)
+  --enable-webhook          Push all enriched events to --webhook-url (outbound mode)
+  --webhook-url <url>       Target URL for outbound event push (default: http://127.0.0.1:8888/events)
   --sync                    Sync source into VM before build/start
   --rebuild                 Force rebuild of elf-owl binary
   -h, --help                Show this help
@@ -36,6 +40,8 @@ while [[ $# -gt 0 ]]; do
     --log-level) LOG_LEVEL="$2"; shift 2 ;;
     --kubeconfig) KUBECONFIG_PATH="$2"; shift 2 ;;
     --no-k8s) NO_K8S=1; shift ;;
+    --enable-webhook) ENABLE_WEBHOOK=1; shift ;;
+    --webhook-url) WEBHOOK_TARGET_URL="$2"; shift 2 ;;
     --sync) SYNC=1; shift ;;
     --rebuild) REBUILD=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -71,6 +77,12 @@ if [[ "$NO_K8S" -eq 1 ]]; then
   RUNTIME_ENV="${RUNTIME_ENV} OWL_K8S_IN_CLUSTER=false OWL_KUBERNETES_METADATA=false OWL_KUBERNETES_ONLY=false"
 elif [[ -n "$KUBECONFIG_PATH" ]]; then
   RUNTIME_ENV="${RUNTIME_ENV} KUBECONFIG=${KUBECONFIG_PATH} OWL_K8S_IN_CLUSTER=false"
+fi
+if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
+  # OWL_WEBHOOK_ENABLED/OWL_WEBHOOK_TARGET_URL are read by config.applyEnvironmentOverrides.
+  # Default target URL is a local ingest listener on :8888; override with --webhook-url.
+  _target="${WEBHOOK_TARGET_URL:-http://127.0.0.1:8888/events}"
+  RUNTIME_ENV="${RUNTIME_ENV} OWL_WEBHOOK_ENABLED=true OWL_WEBHOOK_TARGET_URL=${_target}"
 fi
 
 echo "[agent] Starting elf-owl..."
@@ -111,3 +123,8 @@ fi
 
 echo "[agent] Running."
 echo "[agent] Logs: ${VM_LOG_FILE}"
+if [[ "$ENABLE_WEBHOOK" -eq 1 ]]; then
+  _target="${WEBHOOK_TARGET_URL:-http://127.0.0.1:8888/events}"
+  echo "[agent] Webhook pusher: pushing all enriched events to ${_target}"
+  echo "[agent] Run a listener on that URL to receive batches of JSON events for ClickHouse ingest."
+fi

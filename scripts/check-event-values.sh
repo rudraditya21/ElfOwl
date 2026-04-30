@@ -60,4 +60,5 @@ print_type "network" "network event sent"
 print_type "dns" "dns event sent"
 print_type "file" "file event sent"
 print_type "capability" "capability event sent"
+print_type "tls" "tls event"
 

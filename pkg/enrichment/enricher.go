@@ -6,8 +6,6 @@ package enrichment
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -23,6 +21,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/udyansh/elf-owl/pkg/ja3"
 	"github.com/udyansh/elf-owl/pkg/kubernetes"
 )
 
@@ -237,168 +236,6 @@ func fieldBytesValue(v reflect.Value, name string) []byte {
 	}
 }
 
-type tlsJA3Meta struct {
-	TLSVersion     string
-	Ciphers        []uint16
-	Extensions     []uint16
-	Curves         []uint16
-	PointFormats   []uint8
-	JA3String      string
-	JA3Fingerprint string
-}
-
-func parseJA3MetadataBytes(b []byte) (*tlsJA3Meta, error) {
-	meta, err := parseTLSClientHelloBytes(b)
-	if err != nil {
-		return nil, err
-	}
-	sum := md5.Sum([]byte(meta.JA3String))
-	meta.JA3Fingerprint = hex.EncodeToString(sum[:])
-	return meta, nil
-}
-
-func isGREASEValue(v uint16) bool {
-	return v&0x0f0f == 0x0a0a && byte(v>>8) == byte(v)
-}
-
-func parseTLSClientHelloBytes(b []byte) (*tlsJA3Meta, error) {
-	if len(b) < 5 {
-		return nil, fmt.Errorf("tls buffer too short")
-	}
-	if b[0] == 0x16 && len(b) >= 9 && b[5] == 0x01 {
-		hlen := int(b[6])<<16 | int(b[7])<<8 | int(b[8])
-		end := 9 + hlen
-		if end > len(b) {
-			end = len(b)
-		}
-		b = b[5:end]
-	}
-	if len(b) < 42 || b[0] != 0x01 {
-		return nil, fmt.Errorf("not a clienthello")
-	}
-	off := 4
-	if off+2 > len(b) {
-		return nil, fmt.Errorf("missing version")
-	}
-	ver := fmt.Sprintf("%d", uint16(b[off])<<8|uint16(b[off+1]))
-	off += 2 + 32
-	if off >= len(b) {
-		return nil, fmt.Errorf("missing session id")
-	}
-	sidLen := int(b[off])
-	off++
-	if off+sidLen > len(b) {
-		return nil, fmt.Errorf("truncated session id")
-	}
-	off += sidLen
-	if off+2 > len(b) {
-		return nil, fmt.Errorf("missing ciphers")
-	}
-	cipherLen := int(b[off])<<8 | int(b[off+1])
-	off += 2
-	// ANCHOR: Graceful cipher truncation - Fix: non-ClientHello / short captures - Apr 26, 2026
-	if available := len(b) - off; cipherLen > available {
-		cipherLen = available &^ 1 // round down to even
-	}
-	var ciphers []uint16
-	for i := 0; i < cipherLen; i += 2 {
-		c := uint16(b[off+i])<<8 | uint16(b[off+i+1])
-		if !isGREASEValue(c) {
-			ciphers = append(ciphers, c)
-		}
-	}
-	off += cipherLen
-	if off >= len(b) {
-		return &tlsJA3Meta{TLSVersion: ver, Ciphers: ciphers, JA3String: buildJA3String(ver, ciphers, nil, nil, nil)}, nil
-	}
-	compLen := int(b[off])
-	off++
-	if off+compLen > len(b) {
-		return nil, fmt.Errorf("truncated compression methods")
-	}
-	off += compLen
-	if off+2 > len(b) {
-		return &tlsJA3Meta{TLSVersion: ver, Ciphers: ciphers, JA3String: buildJA3String(ver, ciphers, nil, nil, nil)}, nil
-	}
-	extLen := int(b[off])<<8 | int(b[off+1])
-	off += 2
-	// ANCHOR: Graceful truncation for extensions - Fix: ClientHellos > capture buffer - Apr 26, 2026
-	// Clamp extLen to available bytes and parse what we have, matching vaanvil behaviour.
-	if available := len(b) - off; extLen > available {
-		extLen = available
-	}
-	end := off + extLen
-	var exts, curves []uint16
-	var points []uint8
-	for off+4 <= end {
-		et := uint16(b[off])<<8 | uint16(b[off+1])
-		el := int(b[off+2])<<8 | int(b[off+3])
-		off += 4
-		if off+el > end {
-			break // truncated extension — stop but keep what we parsed
-		}
-		if isGREASEValue(et) {
-			off += el
-			continue
-		}
-		exts = append(exts, et)
-		switch et {
-		case 0x000a:
-			if el >= 2 {
-				ll := int(b[off])<<8 | int(b[off+1])
-				for i := 0; i+1 < ll && 2+i+1 < el; i += 2 {
-					c := uint16(b[off+2+i])<<8 | uint16(b[off+2+i+1])
-					if !isGREASEValue(c) {
-						curves = append(curves, c)
-					}
-				}
-			}
-		case 0x000b:
-			if el >= 1 {
-				ll := int(b[off])
-				for i := 0; i < ll && 1+i < el; i++ {
-					points = append(points, b[off+1+i])
-				}
-			}
-		}
-		off += el
-	}
-	return &tlsJA3Meta{
-		TLSVersion:   ver,
-		Ciphers:      ciphers,
-		Extensions:   exts,
-		Curves:       curves,
-		PointFormats: points,
-		JA3String:    buildJA3String(ver, ciphers, exts, curves, points),
-	}, nil
-}
-
-func buildJA3String(version string, ciphers, exts, curves []uint16, points []uint8) string {
-	return fmt.Sprintf("%s,%s,%s,%s,%s", version, joinUint16s(ciphers), joinUint16s(exts), joinUint16s(curves), joinUint8s(points))
-}
-
-func joinUint16s(v []uint16) string {
-	if len(v) == 0 {
-		return ""
-	}
-	out := make([]string, 0, len(v))
-	for _, n := range v {
-		out = append(out, fmt.Sprintf("%d", n))
-	}
-	return strings.Join(out, "-")
-}
-
-func joinUint8s(v []uint8) string {
-	if len(v) == 0 {
-		return ""
-	}
-	out := make([]string, 0, len(v))
-	for _, n := range v {
-		out = append(out, fmt.Sprintf("%d", n))
-	}
-	return strings.Join(out, "-")
-}
-
 func ipFromUint32(addr uint32) string {
 	return net.IPv4(byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24)).String()
 }
@@ -607,6 +444,90 @@ func procContainerID(pid uint32) string {
 		}
 	}
 	return ""
+}
+
+// ANCHOR: procUID helper - Bug fix: FileEvent has no UID field - Apr 29, 2026
+// Reads the real UID of a process from /proc/<pid>/status (first Uid: field = real UID).
+// Used by EnrichFileEvent which receives a FileEvent struct that carries no UID.
+// Returns 0 if the process has already exited or the file is unreadable.
+// ANCHOR: procUID/procComm TOCTOU - Known limitation: PID reuse for short-lived processes - Apr 30, 2026
+// These reads happen after the eBPF event is delivered to userspace. For processes that
+// exec and exit in under ~1ms the PID may already be reused by a different process, causing
+// the UID or command name to be attributed to the wrong process identity. This is an inherent
+// limitation of userspace /proc enrichment and cannot be fully eliminated without in-kernel
+// attribution at event-generation time.
+func procUID(pid uint32) uint32 {
+	if pid == 0 {
+		return 0
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "status"))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(line, "Uid:") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			break
+		}
+		uid, err := strconv.ParseUint(fields[1], 10, 32)
+		if err != nil {
+			break
+		}
+		return uint32(uid)
+	}
+	return 0
+}
+
+// ANCHOR: procComm helper - Bug fix: file cmdVal was using Filename (the accessed path) - Apr 29, 2026
+// Reads the short executable name of a process from /proc/<pid>/comm.
+// Used by EnrichFileEvent so Process.Command carries the binary name, not the accessed file path.
+func procComm(pid uint32) string {
+	if pid == 0 {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprintf("%d", pid), "comm"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// ANCHOR: sensitive path list - Bug fix: FileContext.Sensitive was never set - Apr 29, 2026
+// Used by isSensitivePath to decide whether a file access should raise the
+// sensitive_file_access threat indicator for analytics.
+var sensitivePaths = []string{
+	"/etc/passwd",
+	"/etc/shadow",
+	"/etc/gshadow",
+	"/etc/master.passwd",
+	"/etc/sudoers",
+	"/etc/sudoers.d",
+	"/etc/ssh",
+	"/root/.ssh",
+	"/.ssh",
+	"/etc/kubernetes",
+	"/var/run/secrets/kubernetes.io",
+	"/run/secrets/kubernetes.io",
+	"/etc/ssl/private",
+	"/etc/pki",
+	"/proc/keys",
+	"/proc/sysrq-trigger",
+}
+
+// isSensitivePath returns true if path equals or is nested under a known sensitive path.
+func isSensitivePath(path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, prefix := range sensitivePaths {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 var errCgroupInodeMatch = errors.New("cgroup inode match")
@@ -1366,7 +1287,9 @@ func (e *Enricher) EnrichTLSEvent(
 		return nil, fmt.Errorf("empty tls metadata")
 	}
 
-	ja3Meta, err := parseJA3MetadataBytes(meta)
+	// ANCHOR: TLS enrichment via pkg/ja3 - Refactor: eliminated local JA3 duplication - Apr 29, 2026
+	// Replaced parseTLSClientHelloBytes with ja3.ParseJA3Metadata; SNI now also available here.
+	ja3Meta, err := ja3.ParseJA3Metadata(meta)
 	if err != nil {
 		return nil, err
 	}
@@ -1379,6 +1302,7 @@ func (e *Enricher) EnrichTLSEvent(
 		Extensions:     append([]uint16(nil), ja3Meta.Extensions...),
 		Curves:         append([]uint16(nil), ja3Meta.Curves...),
 		PointFormats:   append([]uint8(nil), ja3Meta.PointFormats...),
+		SNI:            ja3Meta.SNI,
 	}
 
 	return &EnrichedEvent{
@@ -1411,11 +1335,17 @@ func (e *Enricher) EnrichFileEvent(
 	if err != nil {
 		return nil, err
 	}
+	// ANCHOR: File event field extraction - Bug fix: UID/Mode/cmdVal/Sensitive - Apr 29, 2026
+	// FileEvent eBPF struct has no UID field; procUID reads /proc/<pid>/status instead.
+	// procComm reads /proc/<pid>/comm so Process.Command is the binary name, not the accessed path.
+	// Mode is now extracted from the FileEvent struct (used for chmod ops).
+	// Sensitive is derived from isSensitivePath so sensitive_file_access indicator fires correctly.
 	pidVal := uint32(fieldUintValue(v, "PID"))
-	uidVal := uint32(fieldUintValue(v, "UID"))
+	uidVal := procUID(pidVal)
 	pathVal := fieldStringValue(v, "Filename")
 	opVal := fileOperationName(fieldUintValue(v, "Operation"))
-	cmdVal := fieldStringValue(v, "Filename")
+	modeVal := uint32(fieldUintValue(v, "Mode"))
+	cmdVal := procComm(pidVal)
 	cgroupIDVal := fieldUintValue(v, "CgroupID")
 
 	// ANCHOR: Container context propagation - Feature: PID-based container lookup - Jan 2026
@@ -1486,6 +1416,8 @@ func (e *Enricher) EnrichFileEvent(
 			Operation: opVal,
 			PID:       pidVal,
 			UID:       uidVal,
+			Mode:      modeVal,
+			Sensitive: isSensitivePath(pathVal),
 		},
 	}
 
@@ -1530,6 +1462,9 @@ func (e *Enricher) EnrichCapabilityEvent(
 	allowedVal := fieldUintValue(v, "CheckType") != 2
 	nameVal := capabilityNameFromID(capabilityID)
 	cgroupIDVal := fieldUintValue(v, "CgroupID")
+	// ANCHOR: SyscallID extraction - Bug fix: CapabilityContext.SyscallID was always 0 - Apr 29, 2026
+	// CapabilityEvent carries SyscallID but the enricher never forwarded it to CapabilityContext.
+	syscallIDVal := uint32(fieldUintValue(v, "SyscallID"))
 
 	// ANCHOR: Container context propagation - Feature: PID-based container lookup - Jan 2026
 	// Resolve container metadata from PID when available
@@ -1591,10 +1526,11 @@ func (e *Enricher) EnrichCapabilityEvent(
 			Command: cmdVal,
 		},
 		Capability: &CapabilityContext{
-			Name:    nameVal,
-			Allowed: allowedVal,
-			PID:     pidVal,
-			UID:     uidVal,
+			Name:      nameVal,
+			Allowed:   allowedVal,
+			PID:       pidVal,
+			UID:       uidVal,
+			SyscallID: syscallIDVal,
 		},
 	}
 

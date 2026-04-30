@@ -37,9 +37,14 @@ func ProbeTLSCertificate(ctx context.Context, hostport string, timeout time.Dura
 		timeout = 3 * time.Second
 	}
 
+	// ANCHOR: ProbeTLSCertificate ServerName - Bug: missing SNI caused wrong cert on multi-tenant TLS - Apr 30, 2026
+	// Without ServerName the TLS stack sends no SNI extension, so multi-tenant endpoints return their
+	// default certificate instead of the one for the requested host, producing a wrong LeafSHA256.
+	host, _, _ := net.SplitHostPort(hostport)
 	dialer := &net.Dialer{Timeout: timeout}
 	conn, err := tls.DialWithDialer(dialer, "tcp", hostport, &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // certificate is inspected, not trusted, here
+		ServerName:         host,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tls dial %s: %w", hostport, err)

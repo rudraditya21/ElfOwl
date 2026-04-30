@@ -80,12 +80,26 @@ type Agent struct {
 	ruleReloadInterval time.Duration
 	ruleReloadTimeout  time.Duration
 
+	// ANCHOR: Outbound webhook pusher field - Feature: ClickHouse event push - Apr 29, 2026
+	// Nil when webhook.enabled=false; Send() is only called when non-nil.
+	WebhookPusher *WebhookPusher
+
 	// Metrics
 	MetricsRegistry MetricsRecorder
 
 	// Control channels
 	done      chan struct{}
 	startTime time.Time
+
+	// ANCHOR: WebhookPusher send/drain barrier - Bug #9: Send() could race drain loop on shutdown - Apr 30, 2026
+	// producerWg tracks the goroutines that can call WebhookPusher.Send():
+	//   - 6 eBPF event handlers (handleProcessEvents … handleTLSEvents)
+	//   - 1 compliance watcher (startComplianceWatchers, only when K8sClient != nil)
+	// Stop() waits for all of them to exit before calling WebhookPusher.Stop(), guaranteeing
+	// no Send() call races with the pusher's drain loop.
+	// cancelProducers is called in Stop() to signal the compliance watcher (ctx-driven) to exit.
+	producerWg     sync.WaitGroup
+	cancelProducers context.CancelFunc
 
 	// ANCHOR: Mutex-protected counters for goroutine safety - Dec 26, 2025
 	// Multiple event handler goroutines (process, network, file, capability) access
@@ -249,6 +263,20 @@ func NewAgent(config *Config) (*Agent, error) {
 		zap.String("endpoint", config.Agent.OWL.Endpoint),
 	)
 
+	// ANCHOR: Outbound webhook pusher init - Feature: ClickHouse event push - Apr 29, 2026
+	// Created here so the pusher is ready before Start() launches the flush goroutine.
+	if config.Agent.Webhook.Enabled {
+		agent.WebhookPusher = NewWebhookPusher(
+			config.Agent.Webhook,
+			config.Agent.ClusterID,
+			config.Agent.NodeName,
+			zapLogger,
+		)
+		agent.Logger.Info("webhook pusher initialized",
+			zap.String("target", config.Agent.Webhook.TargetURL),
+		)
+	}
+
 	return agent, nil
 }
 
@@ -373,19 +401,27 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.Logger.Info("tls monitor started")
 	}
 
+	// ANCHOR: WebhookPusher send/drain barrier - Bug #9: producers tracked before launch - Apr 30, 2026
+	// Derive a child context for the producer goroutines so Stop() can cancel them independently
+	// of the caller's context. cancelProducers is called in Stop() before producerWg.Wait().
+	producerCtx, cancelProducers := context.WithCancel(ctx)
+	a.cancelProducers = cancelProducers
+
 	// Launch event handlers for each cilium/ebpf monitor
-	go a.handleProcessEvents(ctx)
-	go a.handleNetworkEvents(ctx)
-	go a.handleDNSEvents(ctx)
-	go a.handleFileEvents(ctx)
-	go a.handleCapabilityEvents(ctx)
-	go a.handleTLSEvents(ctx)
+	a.producerWg.Add(6)
+	go a.handleProcessEvents(producerCtx)
+	go a.handleNetworkEvents(producerCtx)
+	go a.handleDNSEvents(producerCtx)
+	go a.handleFileEvents(producerCtx)
+	go a.handleCapabilityEvents(producerCtx)
+	go a.handleTLSEvents(producerCtx)
 
 	// ANCHOR: Start K8s compliance watchers - Feature: pod_spec_check/network_policy_check - Mar 22, 2026
 	// Watches K8s API objects and emits compliance events for rules that are not
 	// driven by eBPF runtime telemetry (e.g., pod_spec_check, network_policy_check).
 	if a.K8sClient != nil {
-		go a.startComplianceWatchers(ctx)
+		a.producerWg.Add(1)
+		go a.startComplianceWatchers(producerCtx)
 	}
 	go a.watchRuleUpdates(ctx)
 
@@ -393,6 +429,14 @@ func (a *Agent) Start(ctx context.Context) error {
 	// Only start the push goroutine when explicitly enabled in config.
 	if a.Config.Agent.OWL.Push.Enabled {
 		go a.pushEvents(ctx)
+	}
+
+	// ANCHOR: Start outbound webhook pusher - Feature: ClickHouse event push - Apr 29, 2026
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Start(ctx)
+		a.Logger.Info("webhook pusher started",
+			zap.String("target", a.Config.Agent.Webhook.TargetURL),
+		)
 	}
 
 	// Launch periodic metrics collector
@@ -476,6 +520,10 @@ func (a *Agent) handleRuntimeEvent(
 
 	// Queue for evidence processing
 	a.EventBuffer.Enqueue(enrichedEvent, violations)
+	// ANCHOR: Forward to outbound webhook pusher - Feature: ClickHouse event push - Apr 29, 2026
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Send(enrichedEvent, violations)
+	}
 	a.metricsMutex.Lock()
 	a.eventsProcessed++
 	a.metricsMutex.Unlock()
@@ -572,10 +620,23 @@ func (a *Agent) handleCapabilityEvent(ctx context.Context, rawEnriched *enrichme
 }
 
 func (a *Agent) handleTLSEvent(ctx context.Context, rawEnriched *enrichment.EnrichedEvent) {
+	// ANCHOR: TLS cert field preservation - Bug: enricher overwrites TLS context losing cert probe data - Apr 30, 2026
+	// EnrichTLSEvent re-parses the raw bytes into a new TLSContext, discarding the cert fields
+	// (CertSHA256, CertIssuer, CertExpiry) that tls_monitor already probed and stored on rawEnriched.TLS.
+	// Wrap the enricher so we can copy those fields onto the returned event before it proceeds.
+	enrichWithCert := func(ctx context.Context, raw interface{}) (*enrichment.EnrichedEvent, error) {
+		ev, err := a.Enricher.EnrichTLSEvent(ctx, raw)
+		if ev != nil && rawEnriched.TLS != nil {
+			ev.TLS.CertSHA256 = rawEnriched.TLS.CertSHA256
+			ev.TLS.CertIssuer = rawEnriched.TLS.CertIssuer
+			ev.TLS.CertExpiry = rawEnriched.TLS.CertExpiry
+		}
+		return ev, err
+	}
 	a.handleRuntimeEvent(
 		ctx,
 		rawEnriched,
-		a.Enricher.EnrichTLSEvent,
+		enrichWithCert,
 		"discarded tls event: no context",
 		"processing tls event",
 		"discarded tls event: enrichment failed",
@@ -586,6 +647,7 @@ func (a *Agent) handleTLSEvent(ctx context.Context, rawEnriched *enrichment.Enri
 
 // handleProcessEvents handles cilium/ebpf process monitor events
 func (a *Agent) handleProcessEvents(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.ProcessMonitor == nil {
 		return
 	}
@@ -607,6 +669,7 @@ func (a *Agent) handleProcessEvents(ctx context.Context) {
 
 // handleNetworkEvents handles cilium/ebpf network monitor events
 func (a *Agent) handleNetworkEvents(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.NetworkMonitor == nil {
 		return
 	}
@@ -630,6 +693,7 @@ func (a *Agent) handleNetworkEvents(ctx context.Context) {
 // ANCHOR: DNS event handler with enrichment pipeline - Dec 27, 2025 / Feb 18, 2026
 // DNS monitor fully integrated; K8s context added via enricher.
 func (a *Agent) handleDNSEvents(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.DNSMonitor == nil {
 		return
 	}
@@ -651,6 +715,7 @@ func (a *Agent) handleDNSEvents(ctx context.Context) {
 
 // handleFileEvents handles cilium/ebpf file monitor events
 func (a *Agent) handleFileEvents(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.FileMonitor == nil {
 		return
 	}
@@ -672,6 +737,7 @@ func (a *Agent) handleFileEvents(ctx context.Context) {
 
 // handleCapabilityEvents handles cilium/ebpf capability monitor events
 func (a *Agent) handleCapabilityEvents(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.CapabilityMonitor == nil {
 		return
 	}
@@ -692,6 +758,7 @@ func (a *Agent) handleCapabilityEvents(ctx context.Context) {
 }
 
 func (a *Agent) handleTLSEvents(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.TLSMonitor == nil {
 		return
 	}
@@ -729,6 +796,9 @@ func (a *Agent) handleComplianceEvent(ctx context.Context, event *enrichment.Enr
 	}
 
 	a.EventBuffer.Enqueue(event, violations)
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Send(event, violations)
+	}
 	a.metricsMutex.Lock()
 	a.eventsProcessed++
 	a.metricsMutex.Unlock()
@@ -921,6 +991,15 @@ func (a *Agent) Stop() error {
 	a.Logger.Info("stopping agent")
 	close(a.done)
 
+	// ANCHOR: WebhookPusher send/drain barrier - Bug #9: producers must exit before drain loop - Apr 30, 2026
+	// Cancel the producer context so the compliance watcher (which parks on ctx.Done()) exits,
+	// then wait for all 7 producer goroutines to return before stopping the pusher. This guarantees
+	// no Send() call races with WebhookPusher's drain loop.
+	if a.cancelProducers != nil {
+		a.cancelProducers()
+	}
+	a.producerWg.Wait()
+
 	var errs []error
 
 	// ANCHOR: Close all cilium/ebpf monitors - Dec 27, 2025
@@ -958,6 +1037,21 @@ func (a *Agent) Stop() error {
 			a.Logger.Error("failed to close capability monitor", zap.Error(err))
 			errs = append(errs, err)
 		}
+	}
+
+	// ANCHOR: TLSMonitor shutdown - Fix: resource leak on agent stop - Apr 29, 2026
+	// TLSMonitor.Stop() closes the stopChan, waits for eventLoop goroutine, and unloads eBPF program.
+	if a.TLSMonitor != nil {
+		if err := a.TLSMonitor.Stop(); err != nil {
+			a.Logger.Error("failed to close tls monitor", zap.Error(err))
+			errs = append(errs, err)
+		}
+	}
+
+	// ANCHOR: Webhook pusher shutdown - Feature: ClickHouse event push - Apr 29, 2026
+	// Stop() drains the internal channel and flushes any remaining events before returning.
+	if a.WebhookPusher != nil {
+		a.WebhookPusher.Stop()
 	}
 
 	if len(errs) > 0 {

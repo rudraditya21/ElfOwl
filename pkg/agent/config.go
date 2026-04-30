@@ -8,12 +8,53 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/udyansh/elf-owl/pkg/config"
 )
+
+// ANCHOR: ExpandEnv sentinel scope - Bug #8: blanket ExpandEnv enabled env injection from YAML - Apr 30, 2026
+// Expands only the documented sentinel variables that the YAML config is allowed to reference.
+// OWL_* vars cover all agent-specific overrides; HOSTNAME covers the node_name default pattern.
+// Any other $VAR or ${VAR} in the YAML (e.g. in rule strings) is left unexpanded.
+// ANCHOR: expandSentinelVars Hostname fallback - Bug: sudo strips HOSTNAME from env - Apr 30, 2026
+// sudo does not forward HOSTNAME (a bash internal) to the child environment, so os.Environ()
+// never contains it. Fall back to os.Hostname() (a syscall) so ${HOSTNAME} always resolves
+// to the real machine name regardless of how the agent was launched.
+func expandSentinelVars(s string) string {
+	var pairs []string
+
+	hostnameInEnv := false
+	for _, kv := range os.Environ() {
+		idx := strings.IndexByte(kv, '=')
+		if idx < 0 {
+			continue
+		}
+		key, val := kv[:idx], kv[idx+1:]
+		if key == "HOSTNAME" {
+			hostnameInEnv = true
+		}
+		if key == "HOSTNAME" || strings.HasPrefix(key, "OWL_") {
+			pairs = append(pairs, "${"+key+"}", val)
+			pairs = append(pairs, "$"+key, val)
+		}
+	}
+
+	if !hostnameInEnv {
+		if h, err := os.Hostname(); err == nil && h != "" {
+			pairs = append(pairs, "${HOSTNAME}", h)
+			pairs = append(pairs, "$HOSTNAME", h)
+		}
+	}
+
+	if len(pairs) == 0 {
+		return s
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
+}
 
 // Config is the top-level configuration structure
 type Config struct {
@@ -34,6 +75,7 @@ type AgentConfig struct {
 	OWL        OWLConfig        `yaml:"owl_api"`
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	Health     HealthConfig     `yaml:"health"`
+	Webhook    WebhookConfig    `yaml:"webhook"`
 }
 
 // LoggingConfig defines logging behavior
@@ -174,6 +216,25 @@ type HealthConfig struct {
 	Path          string `yaml:"path"`
 }
 
+// ANCHOR: Webhook config - Feature: outbound ClickHouse event push - Apr 29, 2026
+// Disabled by default; enable with webhook.enabled: true (or OWL_WEBHOOK_ENABLED=true).
+// When enabled, all enriched events from every eBPF monitor are batched and POSTed as a
+// JSON array to target_url so an external ingest program can store them in ClickHouse.
+type WebhookConfig struct {
+	Enabled       bool              `yaml:"enabled"`
+	TargetURL     string            `yaml:"target_url"`
+	BatchSize     int               `yaml:"batch_size"`
+	FlushInterval time.Duration     `yaml:"flush_interval"`
+	Timeout       time.Duration     `yaml:"timeout"`
+	Headers       map[string]string `yaml:"headers"`
+	// ANCHOR: WebhookConfig TLS fields - Bug #4: no CA/mTLS on security-sensitive outbound transport - Apr 30, 2026
+	// Zero values mean "use system CA pool, no client certificate" which is a safe default.
+	// Set TLSCAPath to pin a custom CA; set both TLSCertPath+TLSKeyPath to enable mTLS.
+	TLSCAPath   string `yaml:"tls_ca_path"`
+	TLSCertPath string `yaml:"tls_cert_path"`
+	TLSKeyPath  string `yaml:"tls_key_path"`
+}
+
 // LoadConfig loads configuration from YAML and environment variables
 func LoadConfig() (*Config, error) {
 	// Set configuration file paths
@@ -183,8 +244,11 @@ func LoadConfig() (*Config, error) {
 		os.ExpandEnv("$HOME/.config/elf-owl/elf-owl.yaml"),
 	}
 
-	var config *Config
-	var found bool
+	// ANCHOR: defaults-first config loading - Fix: zero-value fields for new config blocks - Apr 29, 2026
+	// Start from DefaultConfig() so any config block absent from the YAML file (e.g. webhook,
+	// added after the YAML was written) retains its default values instead of getting Go zero
+	// values. yaml.Unmarshal merges on top, so explicit YAML values always win.
+	config := DefaultConfig()
 
 	// Try to find and load config file
 	for _, path := range configPaths {
@@ -194,18 +258,18 @@ func LoadConfig() (*Config, error) {
 				return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 			}
 
+			// ANCHOR: ExpandEnv sentinel scope - Bug #8: blanket ExpandEnv enabled env injection from YAML - Apr 30, 2026
+			// Previously os.ExpandEnv expanded every $VAR in the YAML, including user-supplied
+			// strings (rule conditions, annotation values), enabling injection of arbitrary env vars.
+			// Now only the specific sentinel variables the YAML is documented to support are expanded.
+			configData = []byte(expandSentinelVars(string(configData)))
+
 			if err := yaml.Unmarshal(configData, &config); err != nil {
 				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
 			}
 
-			found = true
 			break
 		}
-	}
-
-	// If no config file found, use defaults
-	if !found {
-		config = DefaultConfig()
 	}
 
 	// Override with environment variables
@@ -252,6 +316,18 @@ func (c *Config) applyEnvironmentOverrides() {
 		}
 	}
 
+	// ANCHOR: webhook env overrides - Feature: outbound ClickHouse event push - Apr 29, 2026
+	// Allows start-agent.sh and CI scripts to enable pushing and set the target URL
+	// without editing the YAML config.
+	if v := os.Getenv("OWL_WEBHOOK_ENABLED"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			c.Agent.Webhook.Enabled = parsed
+		}
+	}
+	if v := os.Getenv("OWL_WEBHOOK_TARGET_URL"); v != "" {
+		c.Agent.Webhook.TargetURL = v
+	}
+
 	// ANCHOR: kubernetes_metadata env override - Feature: no-k8s runtime mode - Mar 28, 2026
 	// Allows scripts/operators to run monitors without requiring a Kubernetes client.
 	if v := os.Getenv("OWL_KUBERNETES_METADATA"); v != "" {
@@ -267,8 +343,17 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("cluster_id is required")
 	}
 
+	// ANCHOR: node_name fallback chain - Bug: ${HOSTNAME} expands to empty in sudo env - Apr 29, 2026
+	// HOSTNAME is a bash internal variable, not an exported env var; it is absent from the
+	// environment of processes started with sudo or non-login shells. Fall through to
+	// os.Hostname() (a syscall) as a reliable final fallback.
 	if c.Agent.NodeName == "" {
 		c.Agent.NodeName = os.Getenv("HOSTNAME")
+	}
+	if c.Agent.NodeName == "" {
+		if h, err := os.Hostname(); err == nil {
+			c.Agent.NodeName = h
+		}
 	}
 
 	if c.Agent.NodeName == "" {
@@ -281,6 +366,21 @@ func (c *Config) Validate() error {
 
 	if c.Agent.OWL.Auth.TokenPath == "" {
 		c.Agent.OWL.Auth.TokenPath = "/var/run/secrets/owl-jwt-token"
+	}
+
+	// ANCHOR: Webhook target URL guard - Feature: outbound ClickHouse event push - Apr 29, 2026
+	// An enabled outbound pusher with no target URL would silently drop all events.
+	if c.Agent.Webhook.Enabled && c.Agent.Webhook.TargetURL == "" {
+		return fmt.Errorf("webhook.enabled=true requires webhook.target_url to be set (or OWL_WEBHOOK_TARGET_URL)")
+	}
+	// ANCHOR: Webhook BatchSize/FlushInterval validation - Bug #14: invalid values only clamped in constructor - Apr 30, 2026
+	// Validation belongs here so operators see a clear error at startup rather than a silent clamp.
+	// The constructor guards remain as a last-resort safety net for programmatic callers.
+	if c.Agent.Webhook.Enabled && c.Agent.Webhook.BatchSize < 0 {
+		return fmt.Errorf("webhook.batch_size must be >= 0 (got %d)", c.Agent.Webhook.BatchSize)
+	}
+	if c.Agent.Webhook.Enabled && c.Agent.Webhook.FlushInterval < 0 {
+		return fmt.Errorf("webhook.flush_interval must be >= 0 (got %v)", c.Agent.Webhook.FlushInterval)
 	}
 
 	// ANCHOR: Config guard kubernetes_metadata+kubernetes_only - Fix PR-23 HIGH - Mar 25, 2026
@@ -420,6 +520,13 @@ func DefaultConfig() *Config {
 				Enabled:       true,
 				ListenAddress: ":9091",
 				Path:          "/health",
+			},
+			Webhook: WebhookConfig{
+				Enabled:       false,
+				TargetURL:     "",
+				BatchSize:     100,
+				FlushInterval: 5 * time.Second,
+				Timeout:       10 * time.Second,
 			},
 		},
 	}

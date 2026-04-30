@@ -1,6 +1,6 @@
 module github.com/udyansh/elf-owl
 
-go 1.23.0
+go 1.25.0
 
 require (
 	// eBPF monitoring via Cilium/ebpf (production-grade, maintained)
@@ -77,6 +77,7 @@ require (
 	github.com/frankban/quicktest v1.14.6 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 )
 
 // Use golang.org/x/sys v0.13.0 for Go 1.19 compatibility

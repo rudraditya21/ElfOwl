@@ -7,6 +7,7 @@ NETWORK_IP="1.1.1.1"
 NETWORK_PORT="80"
 FILE_PATH="/tmp/elf-owl-file-test.txt"
 CAP_MOUNT_PATH="/tmp/elf-owl-capability-test-mount"
+TLS_HOST="example.com"
 
 usage() {
   cat <<USAGE
@@ -19,6 +20,7 @@ Options:
   --network-port <port>     TCP destination port (default: ${NETWORK_PORT})
   --file-path <path>        File path to read/write in VM (default: ${FILE_PATH})
   --cap-mount <path>        Mount path for capability trigger (default: ${CAP_MOUNT_PATH})
+  --tls-host <host>         HTTPS host to dial for TLS ClientHello capture (default: ${TLS_HOST})
   -h, --help                Show this help
 USAGE
 }
@@ -31,6 +33,7 @@ while [[ $# -gt 0 ]]; do
     --network-port) NETWORK_PORT="$2"; shift 2 ;;
     --file-path) FILE_PATH="$2"; shift 2 ;;
     --cap-mount) CAP_MOUNT_PATH="$2"; shift 2 ;;
+    --tls-host) TLS_HOST="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -48,9 +51,10 @@ fi
 
 multipass start "$VM_NAME" >/dev/null 2>&1 || true
 
-echo "[events] Triggering process/file/network/dns/capability activity in VM '${VM_NAME}'..."
+echo "[events] Triggering process/file/network/dns/capability/tls activity in VM '${VM_NAME}'..."
 multipass exec "$VM_NAME" -- \
-  env DNS_DOMAIN="$DNS_DOMAIN" NETWORK_IP="$NETWORK_IP" NETWORK_PORT="$NETWORK_PORT" FILE_PATH="$FILE_PATH" CAP_MOUNT_PATH="$CAP_MOUNT_PATH" \
+  env DNS_DOMAIN="$DNS_DOMAIN" NETWORK_IP="$NETWORK_IP" NETWORK_PORT="$NETWORK_PORT" \
+      FILE_PATH="$FILE_PATH" CAP_MOUNT_PATH="$CAP_MOUNT_PATH" TLS_HOST="$TLS_HOST" \
   bash -s <<'EOF'
 set -euo pipefail
 
@@ -96,5 +100,11 @@ sudo mount -t tmpfs tmpfs "${CAP_MOUNT_PATH}" >/dev/null 2>&1 || true
 sudo umount "${CAP_MOUNT_PATH}" >/dev/null 2>&1 || true
 sudo rmdir "${CAP_MOUNT_PATH}" >/dev/null 2>&1 || true
 
+echo "[events] tls: outbound HTTPS ClientHello to ${TLS_HOST} (captured by TLS monitor)"
+# curl performs a TLS handshake; the eBPF program captures the ClientHello bytes
+# on the write/sendmsg syscall path and computes a JA3 fingerprint.
+timeout 5 curl -sk "https://${TLS_HOST}" >/dev/null 2>&1 || true
+
 echo '[events] done'
 EOF
+

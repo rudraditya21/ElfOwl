@@ -20,6 +20,7 @@ import (
 )
 
 func (a *Agent) startComplianceWatchers(ctx context.Context) {
+	defer a.producerWg.Done()
 	if a.K8sClient == nil || a.K8sClient.GetClientset() == nil {
 		a.Logger.Warn("kubernetes client unavailable; skipping compliance watchers")
 		return

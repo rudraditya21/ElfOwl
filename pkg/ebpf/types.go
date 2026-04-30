@@ -4,6 +4,11 @@
 
 package ebpf
 
+import (
+	"encoding/binary"
+	"fmt"
+)
+
 // ============================================================================
 // Program Names - Match filenames in pkg/ebpf/programs/
 // ============================================================================
@@ -128,10 +133,39 @@ type TLSClientHelloEvent struct {
 	SrcPort   uint16
 	DstPort   uint16
 	CgroupID  uint64
-	// ANCHOR: TLS buffer size increase - Fix: truncated extensions - Apr 26, 2026
-	// 1024 bytes matches vaanvil; covers real-world ClientHellos including large key_share extensions.
-	Length    uint32
-	Metadata  [1024]byte
+	// ANCHOR: TLS buffer size increase to 2048 - Fix: TLS 1.3 key_share truncation - Apr 29, 2026
+	// 2048 bytes covers PQ-hybrid key_share extensions (X25519Kyber768 ~1200 bytes) that exceeded
+	// the previous 1024-byte limit and produced inconsistent JA3 fingerprints for TLS 1.3 clients.
+	// Must match TLS_METADATA_MAX in pkg/ebpf/programs/tls.c for binary.Read to succeed.
+	Length   uint32
+	Metadata [2048]byte
+}
+
+// ANCHOR: TLSClientHelloEvent packed decode - Bug: amd64 alignment padding mismatches __attribute__((packed)) C struct - Apr 30, 2026
+// The C struct uses __attribute__((packed)) so fields are contiguous with no alignment gaps.
+// Go's default struct layout inserts 4 bytes of padding before CgroupID (uint64 aligned to 8),
+// shifting CgroupID, Length, and Metadata to wrong offsets when using binary.Read directly.
+// Offsets (packed): PID=0 Family=4 Protocol=6 Direction=7 SrcPort=8 DstPort=10 CgroupID=12 Length=20 Metadata=24
+const tlsEventFixedSize = 24 // bytes before Metadata
+
+// DecodeTLSEvent decodes a packed eBPF tls_event byte slice into TLSClientHelloEvent
+// using explicit little-endian reads at known offsets, bypassing Go struct alignment.
+func DecodeTLSEvent(b []byte) (*TLSClientHelloEvent, error) {
+	if len(b) < tlsEventFixedSize {
+		return nil, fmt.Errorf("tls event too short: %d bytes", len(b))
+	}
+	e := &TLSClientHelloEvent{
+		PID:       binary.LittleEndian.Uint32(b[0:4]),
+		Family:    binary.LittleEndian.Uint16(b[4:6]),
+		Protocol:  b[6],
+		Direction: b[7],
+		SrcPort:   binary.LittleEndian.Uint16(b[8:10]),
+		DstPort:   binary.LittleEndian.Uint16(b[10:12]),
+		CgroupID:  binary.LittleEndian.Uint64(b[12:20]),
+		Length:    binary.LittleEndian.Uint32(b[20:24]),
+	}
+	copy(e.Metadata[:], b[tlsEventFixedSize:])
+	return e, nil
 }
 
 // ============================================================================

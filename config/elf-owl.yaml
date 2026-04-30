@@ -120,3 +120,14 @@ agent:
     enabled: true
     listen_address: ":9091"
     path: "/health"
+
+  # Outbound webhook pusher — pushes all enriched events to an external ingest listener.
+  # Enable with OWL_WEBHOOK_ENABLED=true + OWL_WEBHOOK_TARGET_URL=<url>, or set here.
+  webhook:
+    enabled: false
+    target_url: ""           # Required when enabled; e.g. http://ingest-host:8888/events
+    batch_size: 100          # Max events per POST body
+    flush_interval: 5s       # Flush even if batch_size not reached
+    timeout: 10s             # HTTP client timeout per POST
+    # headers:               # Optional extra headers forwarded with every POST
+    #   Authorization: "Bearer <token>"

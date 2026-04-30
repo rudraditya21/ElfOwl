@@ -1,11 +1,9 @@
 package ebpf
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -14,8 +12,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/udyansh/elf-owl/pkg/enrichment"
 )
 
@@ -39,11 +35,10 @@ type TLSMonitor struct {
 	started    bool
 	mu         sync.Mutex
 
-	// ANCHOR: cert cache + singleflight - Feature: cert_sha256 per-SNI cache - Apr 26, 2026
-	// singleflight collapses concurrent probes for the same SNI into one outbound connection.
+	// ANCHOR: cert cache - Feature: cert_sha256 per-SNI cache - Apr 26, 2026
+	// Async probe populates on first miss; cache hit serves all subsequent events for the same SNI.
 	certCache   map[string]*certCacheEntry
 	certCacheMu sync.Mutex
-	certGroup   singleflight.Group
 }
 
 func NewTLSMonitor(programSet *ProgramSet, logger *zap.Logger) *TLSMonitor {
@@ -111,8 +106,8 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
-			evt := &TLSClientHelloEvent{}
-			if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, evt); err != nil {
+			evt, err := DecodeTLSEvent(data)
+			if err != nil {
 				tm.logger.Warn("parse tls event failed", zap.Error(err))
 				continue
 			}
@@ -131,8 +126,19 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 				TLS:       &enrichment.TLSContext{},
 				Timestamp: time.Now(),
 			}
+			// ANCHOR: TLS version drop log - Bug #13: out-of-range TLS version events silently discarded - Apr 30, 2026
+			// ParseJA3Metadata rejects ClientHellos with legacy_version outside 0x0301–0x0304.
+			// Log at Warn so operators can distinguish parse failures from capture failures.
 			// Parse in userspace to keep the BPF side small and verifier-friendly.
-			if meta, err := ParseJA3Metadata(evt.Metadata[:evt.Length]); err == nil {
+			meta, err := ParseJA3Metadata(evt.Metadata[:evt.Length])
+			if err != nil {
+				tm.logger.Warn("tls ja3 parse failed, event dropped",
+					zap.Error(err),
+					zap.Uint32("pid", evt.PID),
+					zap.Uint16("dst_port", evt.DstPort),
+				)
+			}
+			if err == nil {
 				tm.logger.Debug(
 					"tls ja3 parsed",
 					zap.String("ja3_fingerprint", meta.JA3Fingerprint),
@@ -151,7 +157,12 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 					SNI:            meta.SNI,
 				}
 				// ANCHOR: cert probe on SNI with cache - Feature: cert_sha256 - Apr 26, 2026
-				// Cache hit: populate immediately. Cache miss: probe async so event loop is not blocked.
+				// Cache hit: populate cert fields immediately before the event is queued.
+				// Cache miss: launch a background goroutine so eventLoop is not blocked by the
+				// outbound TLS dial (up to 3 s timeout). The first ClientHello to a new SNI ships
+				// with empty cert fields; all subsequent events within the 10-minute TTL get the
+				// cached values. Acceptable trade-off: reliable event capture beats complete cert
+				// data on event #1.
 				if meta.SNI != "" {
 					if cached := tm.getCachedCert(meta.SNI); cached != nil {
 						tlsCtx.CertSHA256 = cached.sha256
@@ -159,10 +170,11 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 						tlsCtx.CertExpiry = cached.expiry
 					} else {
 						sni := meta.SNI
-						go tm.certGroup.Do(sni, func() (interface{}, error) {
-							certSHA256, issuer, expiry := probeCert(sni)
+						dstPort := evt.DstPort
+						go func() {
+							certSHA256, issuer, expiry := probeCert(sni, dstPort)
 							if certSHA256 == "" {
-								return nil, nil
+								return
 							}
 							tm.setCachedCert(sni, &certCacheEntry{
 								sha256:    certSHA256,
@@ -175,13 +187,10 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 								zap.String("cert_sha256", certSHA256),
 								zap.String("cert_issuer", issuer),
 							)
-							return nil, nil
-						})
+						}()
 					}
 				}
 				enriched.TLS = tlsCtx
-			} else {
-				tm.logger.Debug("tls ja3 parse skipped", zap.Error(err))
 			}
 			select {
 			case tm.eventChan <- enriched:
@@ -197,13 +206,13 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 	}
 }
 
-// ANCHOR: TLS certificate active probe - Feature: cert_sha256 via SNI - Apr 26, 2026
-// Dials host:443, grabs the leaf certificate DER, and computes SHA256 + issuer + expiry.
-// Matches vaanvil's probeTLSCertificate approach — entirely userspace, no eBPF involvement.
-func probeCert(sni string) (certSHA256, issuer string, expiry int64) {
+// ANCHOR: probeCert port parameter - Bug: hardcoded 443 missed non-standard TLS ports - Apr 30, 2026
+// Previously always dialed sni:443, so services on ports like 6443, 8443, 5671 never got cert metadata.
+// Now uses the destination port from the captured TLS event for correct certificate probing.
+func probeCert(sni string, port uint16) (certSHA256, issuer string, expiry int64) {
 	conn, err := tls.DialWithDialer(
 		&net.Dialer{Timeout: 3 * time.Second},
-		"tcp", net.JoinHostPort(sni, "443"),
+		"tcp", net.JoinHostPort(sni, fmt.Sprintf("%d", port)),
 		&tls.Config{ServerName: sni, InsecureSkipVerify: true},
 	)
 	if err != nil {
