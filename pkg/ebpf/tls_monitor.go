@@ -12,8 +12,6 @@ import (
 	"time"
 
 	"go.uber.org/zap"
-	"golang.org/x/sync/singleflight"
-
 	"github.com/udyansh/elf-owl/pkg/enrichment"
 )
 
@@ -37,11 +35,10 @@ type TLSMonitor struct {
 	started    bool
 	mu         sync.Mutex
 
-	// ANCHOR: cert cache + singleflight - Feature: cert_sha256 per-SNI cache - Apr 26, 2026
-	// singleflight collapses concurrent probes for the same SNI into one outbound connection.
+	// ANCHOR: cert cache - Feature: cert_sha256 per-SNI cache - Apr 26, 2026
+	// Async probe populates on first miss; cache hit serves all subsequent events for the same SNI.
 	certCache   map[string]*certCacheEntry
 	certCacheMu sync.Mutex
-	certGroup   singleflight.Group
 }
 
 func NewTLSMonitor(programSet *ProgramSet, logger *zap.Logger) *TLSMonitor {
@@ -160,12 +157,12 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 					SNI:            meta.SNI,
 				}
 				// ANCHOR: cert probe on SNI with cache - Feature: cert_sha256 - Apr 26, 2026
-				// Cache hit: populate immediately.
-				// Cache miss: probe synchronously via singleflight so cert fields are populated
-				// before the event is queued for the webhook pusher. singleflight deduplicates
-				// concurrent probes for the same SNI so only one outbound TLS dial occurs.
-				// Previously the probe ran in a background goroutine, causing the event to be
-				// pushed before the cert arrived and cert_sha256 to always be empty.
+				// Cache hit: populate cert fields immediately before the event is queued.
+				// Cache miss: launch a background goroutine so eventLoop is not blocked by the
+				// outbound TLS dial (up to 3 s timeout). The first ClientHello to a new SNI ships
+				// with empty cert fields; all subsequent events within the 10-minute TTL get the
+				// cached values. Acceptable trade-off: reliable event capture beats complete cert
+				// data on event #1.
 				if meta.SNI != "" {
 					if cached := tm.getCachedCert(meta.SNI); cached != nil {
 						tlsCtx.CertSHA256 = cached.sha256
@@ -174,10 +171,10 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 					} else {
 						sni := meta.SNI
 						dstPort := evt.DstPort
-						tm.certGroup.Do(sni, func() (interface{}, error) { //nolint:errcheck
+						go func() {
 							certSHA256, issuer, expiry := probeCert(sni, dstPort)
 							if certSHA256 == "" {
-								return nil, nil
+								return
 							}
 							tm.setCachedCert(sni, &certCacheEntry{
 								sha256:    certSHA256,
@@ -190,13 +187,7 @@ func (tm *TLSMonitor) eventLoop(ctx context.Context) {
 								zap.String("cert_sha256", certSHA256),
 								zap.String("cert_issuer", issuer),
 							)
-							return nil, nil
-						})
-						if cached := tm.getCachedCert(sni); cached != nil {
-							tlsCtx.CertSHA256 = cached.sha256
-							tlsCtx.CertIssuer = cached.issuer
-							tlsCtx.CertExpiry = cached.expiry
-						}
+						}()
 					}
 				}
 				enriched.TLS = tlsCtx
