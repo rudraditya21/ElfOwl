@@ -401,6 +401,12 @@ func (p *WebhookPusher) post(ctx context.Context, batch []WebhookEvent) error {
 	io.Copy(io.Discard, resp.Body) //nolint:errcheck // draining for connection reuse; content is discarded
 
 	if resp.StatusCode >= 400 {
+		// ANCHOR: redactHeaders call site - Bug #7: auth tokens redacted in error log - Apr 30, 2026
+		// Only emitted on the error path. Logs status and safe header keys only — no body, no URL query params.
+		p.logger.Debug("webhook post failed",
+			zap.Int("status", resp.StatusCode),
+			zap.Any("headers", redactHeaders(p.config.Headers)),
+		)
 		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, p.config.TargetURL)
 	}
 	p.logger.Debug("webhook batch pushed",
@@ -410,9 +416,9 @@ func (p *WebhookPusher) post(ctx context.Context, batch []WebhookEvent) error {
 	return nil
 }
 
-// ANCHOR: redactHeaders - Bug #7: auth tokens could leak into logs via header map - Apr 30, 2026
+// ANCHOR: redactHeaders - Bug #7: auth tokens redacted in post() error log - Apr 30, 2026
 // Returns a copy of the header map with values for sensitive keys replaced by "[redacted]".
-// Used only in log/error paths — the actual request always receives the original values.
+// Called only on the error path in post(); the actual HTTP request always receives original values.
 func redactHeaders(headers map[string]string) map[string]string {
 	sensitiveKeys := map[string]bool{
 		"authorization": true,
