@@ -220,14 +220,25 @@ type WebhookPusher struct {
 	logger    *zap.Logger
 	done      chan struct{}
 	wg        sync.WaitGroup
+	// ANCHOR: WebhookPusher Start/Stop once guards - Bug #1/#2: double-call panic and duplicate goroutine - Apr 30, 2026
+	// close(done) panics on a second call; a second Start() spawns a duplicate flushLoop that races
+	// on eventCh and corrupts the WaitGroup counter. sync.Once makes both calls idempotent.
+	startOnce sync.Once
+	stopOnce  sync.Once
 }
 
-// ANCHOR: BatchSize guard - Bug fix: batch_size:0 causes blocking channel + flush-every-event - Apr 30, 2026
-// A user-supplied batch_size:0 would make the channel buffer 0 (synchronous/blocking Send) and
-// trigger len(batch)>=0 on every append (a flush-every-event loop). Guard to the default (100).
+// ANCHOR: FlushInterval/Timeout zero-value guards - Bug #3: NewTicker(0) panic - Apr 30, 2026
+// BatchSize guard was already present; FlushInterval=0 panics time.NewTicker and Timeout=0
+// means no HTTP deadline — flush goroutine can block indefinitely on a slow endpoint.
 func NewWebhookPusher(cfg WebhookConfig, clusterID, nodeName string, logger *zap.Logger) *WebhookPusher {
 	if cfg.BatchSize <= 0 {
 		cfg.BatchSize = 100
+	}
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 5 * time.Second
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 10 * time.Second
 	}
 	return &WebhookPusher{
 		config:    cfg,
@@ -240,17 +251,22 @@ func NewWebhookPusher(cfg WebhookConfig, clusterID, nodeName string, logger *zap
 	}
 }
 
-// Start launches the background flush goroutine.
+// Start launches the background flush goroutine. Safe to call multiple times; only the first call has effect.
 func (p *WebhookPusher) Start(ctx context.Context) {
-	p.wg.Add(1)
-	go p.flushLoop(ctx)
+	p.startOnce.Do(func() {
+		p.wg.Add(1)
+		go p.flushLoop(ctx)
+	})
 }
 
 // ANCHOR: Stop drain guarantee - Bug fix: Stop returned before final POST completed - Apr 30, 2026
 // Closes done to signal the flush goroutine, then blocks on wg.Wait() until the goroutine
 // finishes its drain+flush. Without this, a fast exit could drop the last in-flight batch.
+// Safe to call multiple times; only the first call closes done.
 func (p *WebhookPusher) Stop() {
-	close(p.done)
+	p.stopOnce.Do(func() {
+		close(p.done)
+	})
 	p.wg.Wait()
 }
 
