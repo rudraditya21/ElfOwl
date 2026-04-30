@@ -745,7 +745,7 @@ func buildThreatIndicators(event *enrichment.EnrichedEvent) []string {
 		add("dangerous_capability")
 	}
 
-	// deduplicate (root_process may be added twice for mixed events)
+	// deduplicate (root_process may be added up to three times for mixed events)
 	return dedupStrings(indicators)
 }
 
