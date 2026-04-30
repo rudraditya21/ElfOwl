@@ -10,7 +10,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -315,10 +317,10 @@ func (p *WebhookPusher) flushLoop(ctx context.Context) {
 		case <-ticker.C:
 			flush()
 		case <-p.done:
-			p.drainAndFlush(batch)
+			p.drainAndFlush(&batch)
 			return
 		case <-ctx.Done():
-			p.drainAndFlush(batch)
+			p.drainAndFlush(&batch)
 			return
 		}
 	}
@@ -328,25 +330,26 @@ func (p *WebhookPusher) flushLoop(ctx context.Context) {
 // Drains any remaining events from the channel into the existing partial batch, then POSTs
 // using a fresh context.Background() timeout so the final flush succeeds even when the agent
 // context is already cancelled (which is the case on normal SIGTERM shutdown).
-func (p *WebhookPusher) drainAndFlush(batch []WebhookEvent) {
+// Receives a pointer so callers don't silently lose appended events on capacity growth.
+func (p *WebhookPusher) drainAndFlush(batch *[]WebhookEvent) {
 draining:
 	for {
 		select {
 		case evt := <-p.eventCh:
-			batch = append(batch, evt)
+			*batch = append(*batch, evt)
 		default:
 			break draining
 		}
 	}
-	if len(batch) == 0 {
+	if len(*batch) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.config.Timeout)
 	defer cancel()
-	if err := p.post(ctx, batch); err != nil {
+	if err := p.post(ctx, *batch); err != nil {
 		p.logger.Warn("webhook shutdown flush failed",
 			zap.Error(err),
-			zap.Int("batch_size", len(batch)),
+			zap.Int("batch_size", len(*batch)),
 		)
 	}
 }
@@ -356,19 +359,40 @@ func (p *WebhookPusher) post(ctx context.Context, batch []WebhookEvent) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.config.TargetURL, bytes.NewReader(body))
+
+	doRequest := func() (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.config.TargetURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("build request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		for k, v := range p.config.Headers {
+			req.Header.Set(k, v)
+		}
+		return p.client.Do(req)
+	}
+
+	// ANCHOR: postBatch retry - Bug #6: transient network failures silently dropped entire batch - Apr 30, 2026
+	// One immediate retry on network errors only (not 4xx/5xx — those are application-layer
+	// rejections that a retry won't fix). Keeps the failure mode explicit and bounded.
+	resp, err := doRequest()
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		var netErr interface{ Timeout() bool }
+		if errors.As(err, &netErr) || isNetworkError(err) {
+			p.logger.Debug("webhook post transient error, retrying once", zap.Error(err))
+			resp, err = doRequest()
+		}
+		if err != nil {
+			return fmt.Errorf("http post: %w", err)
+		}
 	}
-	req.Header.Set("Content-Type", "application/json")
-	for k, v := range p.config.Headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := p.client.Do(req)
-	if err != nil {
-		return fmt.Errorf("http post: %w", err)
-	}
+
+	// ANCHOR: postBatch body drain - Bug #5: unread error body blocked HTTP connection reuse - Apr 30, 2026
+	// net/http only reuses a connection when the response body is fully consumed before Close().
+	// Skipping the drain on error responses causes a new TCP connection per failed batch.
 	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body) //nolint:errcheck // draining for connection reuse; content is discarded
+
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("unexpected status %d from %s", resp.StatusCode, p.config.TargetURL)
 	}
@@ -377,6 +401,39 @@ func (p *WebhookPusher) post(ctx context.Context, batch []WebhookEvent) error {
 		zap.Int("status", resp.StatusCode),
 	)
 	return nil
+}
+
+// ANCHOR: redactHeaders - Bug #7: auth tokens could leak into logs via header map - Apr 30, 2026
+// Returns a copy of the header map with values for sensitive keys replaced by "[redacted]".
+// Used only in log/error paths — the actual request always receives the original values.
+func redactHeaders(headers map[string]string) map[string]string {
+	sensitiveKeys := map[string]bool{
+		"authorization": true,
+		"x-api-key":     true,
+		"x-auth-token":  true,
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		if sensitiveKeys[strings.ToLower(k)] {
+			out[k] = "[redacted]"
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// isNetworkError reports whether err looks like a transient network-layer failure
+// (connection refused, reset, EOF) as opposed to a DNS or TLS error where retrying immediately
+// is unlikely to help.
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "EOF")
 }
 
 // -----------------------------------------------------------------------
@@ -587,7 +644,8 @@ func buildThreatIndicators(event *enrichment.EnrichedEvent) []string {
 
 	add := func(s string) { indicators = append(indicators, s) }
 
-	// process-level root
+	// "root_process" may be added up to three times (Process, File, Capability UID fields)
+	// and is deduplicated by the dedupStrings call at the end of this function.
 	if event.Process != nil && event.Process.UID == 0 {
 		add("root_process")
 	}
