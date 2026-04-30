@@ -8,12 +8,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	cryptotls "crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -242,11 +245,15 @@ func NewWebhookPusher(cfg WebhookConfig, clusterID, nodeName string, logger *zap
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 10 * time.Second
 	}
+	httpClient := &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: buildTLSTransport(cfg),
+	}
 	return &WebhookPusher{
 		config:    cfg,
 		clusterID: clusterID,
 		nodeName:  nodeName,
-		client:    &http.Client{Timeout: cfg.Timeout},
+		client:    httpClient,
 		eventCh:   make(chan WebhookEvent, cfg.BatchSize*4),
 		logger:    logger,
 		done:      make(chan struct{}),
@@ -434,6 +441,36 @@ func isNetworkError(err error) bool {
 	return strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "EOF")
+}
+
+// ANCHOR: WebhookPusher TLS config - Bug #4: no CA/mTLS on security-sensitive outbound transport - Apr 30, 2026
+// Builds an http.Transport with a TLS config derived from WebhookConfig fields.
+// Zero values: system CA pool, no client certificate — safe default for most deployments.
+// TLSCAPath: appends a custom CA (e.g. internal PKI) to the system pool.
+// TLSCertPath+TLSKeyPath: loads a client certificate for mTLS.
+func buildTLSTransport(cfg WebhookConfig) http.RoundTripper {
+	tlsCfg := &cryptotls.Config{}
+
+	if cfg.TLSCAPath != "" {
+		pem, err := os.ReadFile(cfg.TLSCAPath)
+		if err == nil {
+			pool, err := x509.SystemCertPool()
+			if err != nil {
+				pool = x509.NewCertPool()
+			}
+			pool.AppendCertsFromPEM(pem)
+			tlsCfg.RootCAs = pool
+		}
+	}
+
+	if cfg.TLSCertPath != "" && cfg.TLSKeyPath != "" {
+		cert, err := cryptotls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err == nil {
+			tlsCfg.Certificates = []cryptotls.Certificate{cert}
+		}
+	}
+
+	return &http.Transport{TLSClientConfig: tlsCfg}
 }
 
 // -----------------------------------------------------------------------

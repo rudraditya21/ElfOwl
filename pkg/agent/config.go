@@ -186,6 +186,12 @@ type WebhookConfig struct {
 	FlushInterval time.Duration     `yaml:"flush_interval"`
 	Timeout       time.Duration     `yaml:"timeout"`
 	Headers       map[string]string `yaml:"headers"`
+	// ANCHOR: WebhookConfig TLS fields - Bug #4: no CA/mTLS on security-sensitive outbound transport - Apr 30, 2026
+	// Zero values mean "use system CA pool, no client certificate" which is a safe default.
+	// Set TLSCAPath to pin a custom CA; set both TLSCertPath+TLSKeyPath to enable mTLS.
+	TLSCAPath   string `yaml:"tls_ca_path"`
+	TLSCertPath string `yaml:"tls_cert_path"`
+	TLSKeyPath  string `yaml:"tls_key_path"`
 }
 
 // LoadConfig loads configuration from YAML and environment variables
