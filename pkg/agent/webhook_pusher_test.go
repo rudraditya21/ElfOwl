@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -399,6 +400,70 @@ func TestExpandSentinelVarsOWLPrefix(t *testing.T) {
 
 	if got != "cluster_id: prod-cluster\npassword: ${SECRET_KEY}" {
 		t.Errorf("expandSentinelVars: got %q", got)
+	}
+}
+
+// -----------------------------------------------------------------------
+// TLS cert fields propagated into webhook JSON
+// -----------------------------------------------------------------------
+
+// ANCHOR: TestWebhookPusherTLSCertFieldsInJSON - Bug: cert_sha256 missing from webhook - Apr 30, 2026
+// Regression guard: TLSContext.CertSHA256/CertIssuer/CertExpiry must appear in the delivered
+// WebhookEvent JSON under the "tls" key. The bug was that probeCert ran asynchronously so the
+// event was queued before the cert arrived; fix was to make certGroup.Do synchronous.
+// This test verifies the serialization path end-to-end without needing a real TLS probe.
+func TestWebhookPusherTLSCertFieldsInJSON(t *testing.T) {
+	srv, getBatches := collectServer(t)
+	defer srv.Close()
+
+	p := NewWebhookPusher(minimalCfg(srv.URL), "c", "n", nopLogger())
+	p.Start(t.Context())
+
+	ev := enrichedEvent("tls_client_hello")
+	ev.TLS = &enrichment.TLSContext{
+		JA3Fingerprint: "abc123def456",
+		SNI:            "example.com",
+		TLSVersion:     "TLS 1.3",
+		CertSHA256:     "99:e1:4b:50:aa:bb:cc:dd",
+		CertIssuer:     "Let's Encrypt Authority X3",
+		CertExpiry:     1800000000,
+	}
+	p.Send(ev, nil)
+	p.Stop()
+
+	var received []WebhookEvent
+	for _, batch := range getBatches() {
+		received = append(received, batch...)
+	}
+	if len(received) == 0 {
+		t.Fatal("no events received")
+	}
+
+	tls := received[0].TLS
+	if tls == nil {
+		t.Fatal("WebhookEvent.TLS is nil")
+	}
+	if tls.CertSHA256 != "99:e1:4b:50:aa:bb:cc:dd" {
+		t.Errorf("CertSHA256: got %q, want %q", tls.CertSHA256, "99:e1:4b:50:aa:bb:cc:dd")
+	}
+	if tls.CertIssuer != "Let's Encrypt Authority X3" {
+		t.Errorf("CertIssuer: got %q, want %q", tls.CertIssuer, "Let's Encrypt Authority X3")
+	}
+	if tls.CertExpiry != 1800000000 {
+		t.Errorf("CertExpiry: got %d, want %d", tls.CertExpiry, 1800000000)
+	}
+
+	// Also verify the JSON bytes contain the cert fields.
+	raw, err := json.Marshal(received[0])
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	s := string(raw)
+	if !strings.Contains(s, "cert_sha256") {
+		t.Errorf("JSON missing cert_sha256: %s", s)
+	}
+	if !strings.Contains(s, "cert_issuer") {
+		t.Errorf("JSON missing cert_issuer: %s", s)
 	}
 }
 
