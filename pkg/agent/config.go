@@ -8,12 +8,36 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/udyansh/elf-owl/pkg/config"
 )
+
+// ANCHOR: ExpandEnv sentinel scope - Bug #8: blanket ExpandEnv enabled env injection from YAML - Apr 30, 2026
+// Expands only the documented sentinel variables that the YAML config is allowed to reference.
+// OWL_* vars cover all agent-specific overrides; HOSTNAME covers the node_name default pattern.
+// Any other $VAR or ${VAR} in the YAML (e.g. in rule strings) is left unexpanded.
+func expandSentinelVars(s string) string {
+	var pairs []string
+	for _, kv := range os.Environ() {
+		idx := strings.IndexByte(kv, '=')
+		if idx < 0 {
+			continue
+		}
+		key, val := kv[:idx], kv[idx+1:]
+		if key == "HOSTNAME" || strings.HasPrefix(key, "OWL_") {
+			pairs = append(pairs, "${"+key+"}", val)
+			pairs = append(pairs, "$"+key, val)
+		}
+	}
+	if len(pairs) == 0 {
+		return s
+	}
+	return strings.NewReplacer(pairs...).Replace(s)
+}
 
 // Config is the top-level configuration structure
 type Config struct {
@@ -217,12 +241,11 @@ func LoadConfig() (*Config, error) {
 				return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 			}
 
-			// ANCHOR: Expand env vars in YAML config - Bug: ${HOSTNAME} rendered literally - Apr 29, 2026
-			// Go's yaml.Unmarshal does not perform shell-style ${VAR} expansion.
-			// Applying os.ExpandEnv before parsing lets the YAML file use ${HOSTNAME},
-			// ${OWL_CLUSTER_ID}, etc. and have them resolved from the process environment.
-			// This mirrors the convention used by Docker Compose and many k8s toolchains.
-			configData = []byte(os.ExpandEnv(string(configData)))
+			// ANCHOR: ExpandEnv sentinel scope - Bug #8: blanket ExpandEnv enabled env injection from YAML - Apr 30, 2026
+			// Previously os.ExpandEnv expanded every $VAR in the YAML, including user-supplied
+			// strings (rule conditions, annotation values), enabling injection of arbitrary env vars.
+			// Now only the specific sentinel variables the YAML is documented to support are expanded.
+			configData = []byte(expandSentinelVars(string(configData)))
 
 			if err := yaml.Unmarshal(configData, &config); err != nil {
 				return nil, fmt.Errorf("failed to parse config file %s: %w", path, err)
@@ -332,6 +355,15 @@ func (c *Config) Validate() error {
 	// An enabled outbound pusher with no target URL would silently drop all events.
 	if c.Agent.Webhook.Enabled && c.Agent.Webhook.TargetURL == "" {
 		return fmt.Errorf("webhook.enabled=true requires webhook.target_url to be set (or OWL_WEBHOOK_TARGET_URL)")
+	}
+	// ANCHOR: Webhook BatchSize/FlushInterval validation - Bug #14: invalid values only clamped in constructor - Apr 30, 2026
+	// Validation belongs here so operators see a clear error at startup rather than a silent clamp.
+	// The constructor guards remain as a last-resort safety net for programmatic callers.
+	if c.Agent.Webhook.Enabled && c.Agent.Webhook.BatchSize < 0 {
+		return fmt.Errorf("webhook.batch_size must be >= 0 (got %d)", c.Agent.Webhook.BatchSize)
+	}
+	if c.Agent.Webhook.Enabled && c.Agent.Webhook.FlushInterval < 0 {
+		return fmt.Errorf("webhook.flush_interval must be >= 0 (got %v)", c.Agent.Webhook.FlushInterval)
 	}
 
 	// ANCHOR: Config guard kubernetes_metadata+kubernetes_only - Fix PR-23 HIGH - Mar 25, 2026
