@@ -193,12 +193,15 @@ func NewAgent(config *Config) (*Agent, error) {
 
 	// Initialize enricher
 	// ANCHOR: pass file path filter to enricher - Feature: file path watch/ignore - May 1, 2026
+	// ANCHOR: pass protocol filter to enricher - Feature: network protocol filter - May 1, 2026
 	enricher, err := enrichment.NewEnricher(
 		agent.K8sClient,
 		config.Agent.ClusterID,
 		config.Agent.NodeName,
 		config.Agent.EBPF.File.WatchPaths,
 		config.Agent.EBPF.File.IgnorePaths,
+		config.Agent.EBPF.Network.AllowProtocols,
+		config.Agent.EBPF.Network.IgnoreProtocols,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create enricher: %w", err)
@@ -477,10 +480,15 @@ func (a *Agent) handleRuntimeEvent(
 	enrichedEvent, err := enrichFn(ctx, rawEnriched.RawEvent)
 	if err != nil {
 		// ANCHOR: path filter discard - Bug: ErrNoKubernetesContext bypass on kubernetes_only=false - May 1, 2026
-		// ErrFilePathFiltered means the operator explicitly excluded this path via watch_paths/ignore_paths.
-		// Always discard — kubernetes_only=false must not override an explicit path filter.
+		// ErrFilePathFiltered / ErrNetworkProtocolFiltered mean the operator explicitly excluded
+		// this event via watch_paths/ignore_paths or allow_protocols/ignore_protocols.
+		// Always discard — kubernetes_only=false must not override an explicit operator filter.
 		if errors.Is(err, enrichment.ErrFilePathFiltered) {
 			a.Logger.Debug("file event dropped by path filter")
+			return
+		}
+		if errors.Is(err, enrichment.ErrNetworkProtocolFiltered) {
+			a.Logger.Debug("network event dropped by protocol filter")
 			return
 		}
 		// ANCHOR: Discard host events - Filter: K8s-native compliance - Mar 24, 2026

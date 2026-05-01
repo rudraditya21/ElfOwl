@@ -38,6 +38,13 @@ type Enricher struct {
 	watchPaths  []string
 	ignorePaths []string
 
+	// ANCHOR: network protocol filter - Feature: network protocol filter - May 1, 2026
+	// allowProtocols: if non-empty, only events whose protocol matches pass.
+	// ignoreProtocols: events whose protocol matches are dropped regardless.
+	// Protocol strings match IPProtoName: tcp, udp, icmp, icmpv6, sctp, etc.
+	allowProtocols  []string
+	ignoreProtocols []string
+
 	// ANCHOR: cgroupID to containerID cache - Fix PR-23 #3 /proc race - Mar 25, 2026
 	// CgroupID is captured in kernel at event time (race-free). Used as fallback when
 	// /proc/<pid>/cgroup is unreadable (process already exited).
@@ -75,8 +82,12 @@ func withEnrichmentTimeout(ctx context.Context, timeout time.Duration) (context.
 // ANCHOR: Enricher initialization without circular dependency - Dec 26, 2025
 // Pass only needed fields (ClusterID, NodeName) instead of full Config to avoid import cycle
 // ANCHOR: watchPaths/ignorePaths param - Feature: file path watch/ignore - May 1, 2026
+// ANCHOR: allowProtocols/ignoreProtocols param - Feature: network protocol filter - May 1, 2026
 // Nil slices disable the respective filter (current default behaviour is preserved).
-func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string, watchPaths, ignorePaths []string) (*Enricher, error) {
+func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string,
+	watchPaths, ignorePaths []string,
+	allowProtocols, ignoreProtocols []string,
+) (*Enricher, error) {
 	logger, _ := zap.NewProduction()
 
 	enricher := &Enricher{
@@ -86,6 +97,8 @@ func NewEnricher(k8sClient *kubernetes.Client, clusterID, nodeName string, watch
 		Logger:                 logger,
 		watchPaths:             watchPaths,
 		ignorePaths:            ignorePaths,
+		allowProtocols:         allowProtocols,
+		ignoreProtocols:        ignoreProtocols,
 		cgroupToContainerCache: make(map[uint64]string),
 	}
 
@@ -250,15 +263,72 @@ func ipFromUint32(addr uint32) string {
 	return net.IPv4(byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24)).String()
 }
 
+// ANCHOR: protocolName full IPPROTO table - Feature: network protocol filter - May 1, 2026
+// Mirrors IPProtoName in pkg/ebpf/protocols.go. Kept separate to avoid an
+// import cycle (enrichment ← ebpf). Both tables must stay in sync.
 func protocolName(proto uint64) string {
 	switch proto {
-	case 17:
-		return "udp"
+	case 1:
+		return "icmp"
+	case 2:
+		return "igmp"
 	case 6:
 		return "tcp"
+	case 17:
+		return "udp"
+	case 33:
+		return "dccp"
+	case 41:
+		return "ipv6"
+	case 47:
+		return "gre"
+	case 50:
+		return "esp"
+	case 51:
+		return "ah"
+	case 58:
+		return "icmpv6"
+	case 89:
+		return "ospf"
+	case 103:
+		return "pim"
+	case 112:
+		return "vrrp"
+	case 132:
+		return "sctp"
+	case 136:
+		return "udplite"
 	default:
 		return "unknown"
 	}
+}
+
+// ANCHOR: protocolAllowed filter - Feature: network protocol filter - May 1, 2026
+// Returns false when the protocol should be dropped:
+//   - allowProtocols non-empty and protocol matches none of them, OR
+//   - ignoreProtocols non-empty and protocol matches any of them.
+//
+// Comparison is case-insensitive so "TCP" and "tcp" are equivalent.
+func (e *Enricher) protocolAllowed(protocol string) bool {
+	p := strings.ToLower(protocol)
+	if len(e.allowProtocols) > 0 {
+		matched := false
+		for _, a := range e.allowProtocols {
+			if strings.ToLower(a) == p {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	for _, ig := range e.ignoreProtocols {
+		if strings.ToLower(ig) == p {
+			return false
+		}
+	}
+	return true
 }
 
 func networkDirectionName(direction uint64) string {
@@ -1114,11 +1184,20 @@ func (e *Enricher) EnrichNetworkEvent(
 	if err != nil {
 		return nil, err
 	}
+
+	// ANCHOR: protocolAllowed early exit - Feature: network protocol filter - May 1, 2026
+	// Resolve protocol before any enrichment so filtered events are dropped cheaply.
+	// Returns ErrNetworkProtocolFiltered (not ErrNoKubernetesContext) so the agent
+	// always discards the event regardless of the kubernetes_only setting.
+	protocolVal := protocolName(fieldUintValue(v, "Protocol"))
+	if !e.protocolAllowed(protocolVal) {
+		return nil, ErrNetworkProtocolFiltered
+	}
+
 	sourceIPVal := ipFromUint32(uint32(fieldUintValue(v, "SAddr")))
 	destIPVal := ipFromUint32(uint32(fieldUintValue(v, "DAddr")))
 	sourcePortVal := uint16(fieldUintValue(v, "SPort"))
 	destPortVal := uint16(fieldUintValue(v, "DPort"))
-	protocolVal := protocolName(fieldUintValue(v, "Protocol"))
 
 	// ANCHOR: Container context propagation - Feature: PID-based container lookup - Jan 2026
 	// Resolve container metadata from PID when available
