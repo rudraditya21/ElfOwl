@@ -32,6 +32,14 @@ agent:
       enabled: true
       buffer_size: 8192
       timeout: 5s
+      # watch_paths: []    # Only report file events under these prefixes. Empty = monitor everything.
+      #   - /app
+      #   - /data
+      # ignore_paths: []   # Drop file events under these prefixes. Empty = ignore nothing.
+      #   - /proc
+      #   - /sys
+      #   - /dev
+      #   - /run
     capability:
       enabled: true
       buffer_size: 4096
