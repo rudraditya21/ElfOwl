@@ -469,6 +469,13 @@ func (a *Agent) handleRuntimeEvent(
 
 	enrichedEvent, err := enrichFn(ctx, rawEnriched.RawEvent)
 	if err != nil {
+		// ANCHOR: path filter discard - Bug: ErrNoKubernetesContext bypass on kubernetes_only=false - May 1, 2026
+		// ErrFilePathFiltered means the operator explicitly excluded this path via watch_paths/ignore_paths.
+		// Always discard — kubernetes_only=false must not override an explicit path filter.
+		if errors.Is(err, enrichment.ErrFilePathFiltered) {
+			a.Logger.Debug("file event dropped by path filter")
+			return
+		}
 		// ANCHOR: Discard host events - Filter: K8s-native compliance - Mar 24, 2026
 		// ErrNoKubernetesContext = PID has no pod association.
 		// Honour kubernetes_only config: discard (true) or fall through to partial (false).

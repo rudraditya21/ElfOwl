@@ -1373,11 +1373,13 @@ func (e *Enricher) EnrichFileEvent(
 		return nil, err
 	}
 
-	// ANCHOR: filePathAllowed early exit - Feature: file path watch/ignore - May 1, 2026
+	// ANCHOR: filePathAllowed early exit - Bug fix: path filter bypassed when kubernetes_only=false - May 1, 2026
 	// Extract path before any enrichment so we can drop the event cheaply if it falls
 	// outside the configured watch_paths / ignore_paths filter.
+	// Returns ErrFilePathFiltered (not ErrNoKubernetesContext) so the agent always discards
+	// the event regardless of the kubernetes_only setting.
 	if !e.filePathAllowed(fieldStringValue(v, "Filename")) {
-		return nil, ErrNoKubernetesContext
+		return nil, ErrFilePathFiltered
 	}
 
 	// ANCHOR: File event field extraction - Bug fix: UID/Mode/cmdVal/Sensitive - Apr 29, 2026
