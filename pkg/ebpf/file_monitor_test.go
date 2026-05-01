@@ -21,7 +21,7 @@ import (
 
 func TestNewFileMonitor(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	monitor := NewFileMonitor(nil, logger)
+	monitor := NewFileMonitor(nil, logger, 100, nil, nil)
 
 	if monitor == nil {
 		t.Fatal("expected non-nil monitor")
@@ -48,7 +48,7 @@ func TestFileMonitorStart(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockReader := NewMockReader()
 	programSet := NewMockProgramSet(mockReader)
-	monitor := NewFileMonitor(programSet, logger)
+	monitor := NewFileMonitor(programSet, logger, 100, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -69,7 +69,7 @@ func TestFileMonitorStop(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockReader := NewMockReader()
 	programSet := NewMockProgramSet(mockReader)
-	monitor := NewFileMonitor(programSet, logger)
+	monitor := NewFileMonitor(programSet, logger, 100, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -282,7 +282,7 @@ func TestFileEventChannelFlow(t *testing.T) {
 
 	mockReader := NewMockReader(buf.Bytes())
 	programSet := NewMockProgramSet(mockReader)
-	monitor := NewFileMonitor(programSet, logger)
+	monitor := NewFileMonitor(programSet, logger, 100, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -307,7 +307,7 @@ func TestFileContextCancellation(t *testing.T) {
 	logger := zaptest.NewLogger(t)
 	mockReader := NewMockReader()
 	programSet := NewMockProgramSet(mockReader)
-	monitor := NewFileMonitor(programSet, logger)
+	monitor := NewFileMonitor(programSet, logger, 100, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -343,7 +343,7 @@ func TestFileReaderError(t *testing.T) {
 	mockReader := NewMockReader()
 	mockReader.readError = ErrSimulated
 	programSet := NewMockProgramSet(mockReader)
-	monitor := NewFileMonitor(programSet, logger)
+	monitor := NewFileMonitor(programSet, logger, 100, nil, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -368,7 +368,7 @@ func TestFileReaderError(t *testing.T) {
 
 func TestFileEventChanReturnType(t *testing.T) {
 	logger := zaptest.NewLogger(t)
-	monitor := NewFileMonitor(nil, logger)
+	monitor := NewFileMonitor(nil, logger, 100, nil, nil)
 
 	ch := monitor.EventChan()
 

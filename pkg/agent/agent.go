@@ -355,7 +355,14 @@ func (a *Agent) Start(ctx context.Context) error {
 			a.DNSMonitor = ebpf.NewDNSMonitor(collection.DNS, a.Logger)
 		}
 		if a.Config.Agent.EBPF.File.Enabled && collection.File != nil {
-			a.FileMonitor = ebpf.NewFileMonitor(collection.File, a.Logger)
+			// ANCHOR: pass buffer_size and path filter to FileMonitor - Bug: channel flood when filter runs too late - May 1, 2026
+			a.FileMonitor = ebpf.NewFileMonitor(
+				collection.File,
+				a.Logger,
+				a.Config.Agent.EBPF.File.BufferSize,
+				a.Config.Agent.EBPF.File.WatchPaths,
+				a.Config.Agent.EBPF.File.IgnorePaths,
+			)
 		}
 		if a.Config.Agent.EBPF.Capability.Enabled && collection.Capability != nil {
 			a.CapabilityMonitor = ebpf.NewCapabilityMonitor(collection.Capability, a.Logger)

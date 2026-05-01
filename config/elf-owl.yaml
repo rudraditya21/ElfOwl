@@ -50,7 +50,7 @@ agent:
       timeout: 5s
     perf_buffer:
       enabled: true
-      page_count: 64
+      page_count: 256
       lost_handler: true
     ring_buffer:
       enabled: false  # Use perf buffer by default (better compatibility)

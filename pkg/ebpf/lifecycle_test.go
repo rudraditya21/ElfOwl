@@ -38,7 +38,7 @@ func TestMonitorInitialization(t *testing.T) {
 		},
 		{
 			name:    "FileMonitor",
-			monitor: NewFileMonitor(programSet, logger),
+			monitor: NewFileMonitor(programSet, logger, 100, nil, nil),
 		},
 		{
 			name:    "CapabilityMonitor",
@@ -528,7 +528,7 @@ func TestMonitorResourceCleanup(t *testing.T) {
 	}{
 		NewProcessMonitor(NewMockProgramSet(NewMockReader()), logger),
 		NewNetworkMonitor(NewMockProgramSet(NewMockReader()), logger),
-		NewFileMonitor(NewMockProgramSet(NewMockReader()), logger),
+		NewFileMonitor(NewMockProgramSet(NewMockReader()), logger, 100, nil, nil),
 		NewCapabilityMonitor(NewMockProgramSet(NewMockReader()), logger),
 		NewDNSMonitor(NewMockProgramSet(NewMockReader()), logger),
 	}

@@ -456,7 +456,7 @@ func DefaultConfig() *Config {
 				},
 				PerfBuffer: PerfBufferConfig{
 					Enabled:     true,
-					PageCount:   64,
+					PageCount:   256,
 					LostHandler: true,
 				},
 				RingBuffer: RingBufferConfig{

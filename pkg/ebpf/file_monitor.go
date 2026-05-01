@@ -20,23 +20,55 @@ import (
 // FileMonitor monitors file access via eBPF tracepoint
 // Streams FileAccess events from kernel to enrichment pipeline
 type FileMonitor struct {
-	programSet *ProgramSet
-	eventChan  chan *enrichment.EnrichedEvent
-	logger     *zap.Logger
-	stopChan   chan struct{}
-	wg         sync.WaitGroup
-	started    bool
-	mu         sync.Mutex
+	programSet  *ProgramSet
+	eventChan   chan *enrichment.EnrichedEvent
+	logger      *zap.Logger
+	stopChan    chan struct{}
+	wg          sync.WaitGroup
+	started     bool
+	mu          sync.Mutex
+	// ANCHOR: early path filter in eventLoop - Bug: channel flood when filter runs too late - May 1, 2026
+	// Filter is evaluated before the event enters eventChan so blocked paths never
+	// consume channel capacity. chanSize comes from config buffer_size (not hardcoded).
+	watchPaths  []string
+	ignorePaths []string
 }
 
-// NewFileMonitor creates a new file monitor
-func NewFileMonitor(programSet *ProgramSet, logger *zap.Logger) *FileMonitor {
+// NewFileMonitor creates a new file monitor.
+// chanSize controls the eventChan buffer — pass config.Agent.EBPF.File.BufferSize.
+// watchPaths / ignorePaths are the same values used by the enricher; applying them
+// here prevents filtered events from ever entering the channel.
+func NewFileMonitor(programSet *ProgramSet, logger *zap.Logger, chanSize int, watchPaths, ignorePaths []string) *FileMonitor {
 	return &FileMonitor{
-		programSet: programSet,
-		eventChan:  make(chan *enrichment.EnrichedEvent, 100),
-		logger:     logger,
-		stopChan:   make(chan struct{}),
+		programSet:  programSet,
+		eventChan:   make(chan *enrichment.EnrichedEvent, chanSize),
+		logger:      logger,
+		stopChan:    make(chan struct{}),
+		watchPaths:  watchPaths,
+		ignorePaths: ignorePaths,
 	}
+}
+
+// filePathAllowed returns false when the path should be dropped before entering the channel.
+func (fm *FileMonitor) filePathAllowed(path string) bool {
+	if len(fm.watchPaths) > 0 {
+		matched := false
+		for _, p := range fm.watchPaths {
+			if path == p || strings.HasPrefix(path, p+"/") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	for _, p := range fm.ignorePaths {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return false
+		}
+	}
+	return true
 }
 
 // Start begins monitoring file access events
@@ -124,10 +156,18 @@ func (fm *FileMonitor) eventLoop(ctx context.Context) {
 				opType = "unknown"
 			}
 
+			// ANCHOR: early path filter in eventLoop - Bug: channel flood when filter runs too late - May 1, 2026
+			// Evaluate watch_paths / ignore_paths here, before allocating EnrichedEvent or
+			// touching the channel. This keeps the channel free for events that actually matter.
+			path := strings.TrimRight(string(evt.Filename[:]), "\x00")
+			if !fm.filePathAllowed(path) {
+				continue
+			}
+
 			// ANCHOR: File context mode + fd mapping - Feature: syscall coverage expansion - Mar 25, 2026
 			// Propagates mode and fd metadata from eBPF events into FileContext.
 			fileCtx := &enrichment.FileContext{
-				Path:      strings.TrimRight(string(evt.Filename[:]), "\x00"),
+				Path:      path,
 				Operation: opType,
 				PID:       evt.PID,
 				Mode:      evt.Mode,
