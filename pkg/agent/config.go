@@ -92,7 +92,7 @@ type EBPFConfig struct {
 	Enabled       bool              `yaml:"enabled"`
 	KernelBTFPath string            `yaml:"kernel_btf_path"`
 	Process       EBPFMonitorConfig `yaml:"process"`
-	Network       EBPFMonitorConfig `yaml:"network"`
+	Network       EBPFNetworkConfig `yaml:"network"`
 	DNS           EBPFMonitorConfig `yaml:"dns"`
 	File          EBPFFileConfig    `yaml:"file"`
 	Capability    EBPFMonitorConfig `yaml:"capability"`
@@ -118,6 +118,19 @@ type EBPFFileConfig struct {
 	Timeout     time.Duration `yaml:"timeout"`
 	WatchPaths  []string      `yaml:"watch_paths"`
 	IgnorePaths []string      `yaml:"ignore_paths"`
+}
+
+// ANCHOR: EBPFNetworkConfig protocol filter - Feature: network protocol filter - May 1, 2026
+// Extends the base monitor config with protocol allowlist and denylist.
+// AllowProtocols empty = allow all. IgnoreProtocols empty = ignore none.
+// Protocol strings match IPProtoName output: tcp, udp, icmp, icmpv6, igmp,
+// sctp, dccp, gre, esp, ah, ospf, pim, vrrp, udplite, unknown.
+type EBPFNetworkConfig struct {
+	Enabled         bool          `yaml:"enabled"`
+	BufferSize      int           `yaml:"buffer_size"`
+	Timeout         time.Duration `yaml:"timeout"`
+	AllowProtocols  []string      `yaml:"allow_protocols"`
+	IgnoreProtocols []string      `yaml:"ignore_protocols"`
 }
 
 // PerfBufferConfig defines perf buffer settings for event streaming
@@ -429,7 +442,7 @@ func DefaultConfig() *Config {
 					BufferSize: 8192,
 					Timeout:    5 * time.Second,
 				},
-				Network: EBPFMonitorConfig{
+				Network: EBPFNetworkConfig{
 					Enabled:    true,
 					BufferSize: 8192,
 					Timeout:    5 * time.Second,
