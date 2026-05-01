@@ -24,6 +24,11 @@ agent:
       enabled: true
       buffer_size: 8192
       timeout: 5s
+      # allow_protocols: []    # Only report these protocols. Empty = all.
+      #   - tcp                # Supported values: tcp, udp, icmp, icmpv6, igmp, sctp,
+      #   - udp                #   dccp, gre, esp, ah, ospf, pim, vrrp, udplite, unknown
+      # ignore_protocols: []   # Drop these protocols. Empty = none.
+      #   - udp
     dns:
       enabled: true
       buffer_size: 4096
