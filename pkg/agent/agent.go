@@ -360,6 +360,14 @@ func (a *Agent) Start(ctx context.Context) error {
 				a.Config.Agent.EBPF.Network.AllowProtocols,
 				a.Config.Agent.EBPF.Network.IgnoreProtocols,
 			)
+			// ANCHOR: network filter startup log - Feature: network protocol filter - May 1, 2026
+			// Logged at INFO so operators can always confirm the active filter config
+			// without enabling debug mode. Empty slice means "no filter on that side".
+			a.Logger.Info("network monitor initialized",
+				zap.Int("channel_size", a.Config.Agent.EBPF.Network.BufferSize),
+				zap.Strings("allow_protocols", a.Config.Agent.EBPF.Network.AllowProtocols),
+				zap.Strings("ignore_protocols", a.Config.Agent.EBPF.Network.IgnoreProtocols),
+			)
 		}
 		if a.Config.Agent.EBPF.DNS.Enabled && collection.DNS != nil {
 			a.DNSMonitor = ebpf.NewDNSMonitor(collection.DNS, a.Logger)
@@ -372,6 +380,11 @@ func (a *Agent) Start(ctx context.Context) error {
 				a.Config.Agent.EBPF.File.BufferSize,
 				a.Config.Agent.EBPF.File.WatchPaths,
 				a.Config.Agent.EBPF.File.IgnorePaths,
+			)
+			a.Logger.Info("file monitor initialized",
+				zap.Int("channel_size", a.Config.Agent.EBPF.File.BufferSize),
+				zap.Strings("watch_paths", a.Config.Agent.EBPF.File.WatchPaths),
+				zap.Strings("ignore_paths", a.Config.Agent.EBPF.File.IgnorePaths),
 			)
 		}
 		if a.Config.Agent.EBPF.Capability.Enabled && collection.Capability != nil {
